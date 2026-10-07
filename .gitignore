@@ -1,0 +1,19 @@
+# build outputs (build.bat)
+/build/
+/build-*/
+
+# packaged binaries go to GitHub Releases, not into the repository
+/dist/
+/dist_*/
+/*.zip
+
+# test results and listening files (labium_check, okl_hosttest, perftest)
+/test_out/
+
+# pluginval: download it from Tracktion's releases when needed (GPLv3, not part of this project)
+/tools/pluginval/
+
+# editors
+.vs/
+.vscode/
+*.user

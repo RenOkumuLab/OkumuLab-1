@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OkumuLab 1</title>
+<meta name="description" content="OkumuLab 1 — physical model of a Prinzipal 8' flue pipe. Phase 2 screen prototype.">
+<!-- Phase 4: everything is bundled (Three.js r160 and the fonts in vendor/): the plugin's screen works offline -->
+<link rel="stylesheet" href="vendor/fonts/fonts.css">
+<link rel="stylesheet" href="css/okumulab.css">
+<script type="importmap">
+{ "imports": {
+  "three": "./vendor/three/build/three.module.js",
+  "three/addons/": "./vendor/three/examples/jsm/"
+} }
+</script>
+<script type="module">
+  import * as THREE from 'three';
+  import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+  import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+  import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+  import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+  window.THREE = Object.assign({}, THREE, { EffectComposer, RenderPass, UnrealBloomPass, OutputPass });
+  window.dispatchEvent(new Event('okl-three'));
+</script>
+</head>
+<body>
+<div id="frame">
+<div id="stage">
+
+  <!-- ===================== top bar ===================== -->
+  <header id="topbar">
+    <div class="logo">
+      <svg class="logo-mark" viewBox="0 0 40 40" aria-hidden="true">
+        <path d="M14 3 h12 v22 l-6 6 l-6 -6 z" fill="none" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M14 18 h12" stroke="currentColor" stroke-width="1.2" opacity=".55"/>
+        <path d="M17 25 h6" stroke="#ffb547" stroke-width="1.6"/>
+        <path d="M20 31 v6" stroke="currentColor" stroke-width="1.6"/>
+      </svg>
+      <div class="logo-text">
+        <div class="logo-name">OkumuLab<span>1</span></div>
+        <div class="logo-sub">&nbsp;</div>
+      </div>
+    </div>
+    <div class="seg" id="modeSeg" role="group" aria-label="Mode">
+      <button type="button" data-mode="live" class="on">LIVE<small>Play the model</small></button>
+      <button type="button" data-mode="replay">REPLAY<small>Phase 1 data</small></button>
+    </div>
+    <!-- plugin: how the pipe is excited (host parameter "excite") -->
+    <div class="seg" id="exciteSeg" role="group" aria-label="Excitation">
+      <button type="button" data-ex="0" class="on">WIND</button>
+      <button type="button" data-ex="1">MALLET</button>
+    </div>
+    <!-- plugin: the experiment recipes (the host's programs) -->
+    <select id="presetSel" aria-label="Experiment recipe" title="Experiment recipes: the canonical pipe with a few knobs moved (host programs)"></select>
+    <div class="tb-msg" id="tbMsg">Play with the computer keys (A–K) or a MIDI keyboard</div>
+    <div class="tb-right">
+      <div class="tb-stat" title="MIDI input"><span class="k">MIDI</span><span class="led" id="midiLed"></span><span class="v" id="midiName">—</span></div>
+      <div class="tb-stat" title="Sounding voices"><span class="k">VOX</span><span class="v" id="voxCount">0/8</span></div>
+      <div class="tb-stat" title="Audio thread load (estimate)"><span class="k">DSP</span><span class="v" id="cpuVal">—</span></div>
+      <div class="tb-stat" title="Output / internal sample rate"><span class="k">FS</span><span class="v" id="srVal">—</span></div>
+      <label class="tb-vol" title="Output level"><span class="k">OUT</span><input type="range" id="masterVol" min="0" max="1" step="0.01" value="0.8"></label>
+      <button type="button" class="tb-btn" id="btnMon" title="MIDI monitor">MON</button>
+      <button type="button" class="tb-btn" id="btnHelp" title="Controls and mapping">?</button>
+      <button type="button" class="tb-btn" id="btnReset" title="Return every parameter to its default">RESET</button>
+      <button type="button" class="tb-btn warn" id="btnPanic" title="All notes off (Esc)">PANIC</button>
+    </div>
+  </header>
+
+  <!-- ===================== left: parameter groups ===================== -->
+  <section id="left">
+    <div class="mfd" id="grp-midi"><div class="mfd-h"><span class="tag">01</span>MIDI CONTROLLER</div><div class="prms"></div></div>
+    <div class="mfd" id="grp-wind"><div class="mfd-h"><span class="tag">02</span>WIND</div><div class="prms"></div></div>
+    <div class="mfd" id="grp-voice"><div class="mfd-h"><span class="tag">03</span>VOICING</div><div class="prms"></div></div>
+    <div class="mfd" id="grp-shape"><div class="mfd-h"><span class="tag">04</span>GEOMETRY</div><div class="prms"></div></div>
+    <div class="mfd" id="grp-atmos"><div class="mfd-h"><span class="tag">05</span>ATMOSPHERE</div><div class="prms"></div></div>
+  </section>
+
+  <!-- ===================== center: pipe view ===================== -->
+  <section id="view" class="mfd">
+    <canvas id="gl"></canvas>
+    <canvas id="hud"></canvas>
+    <!-- plugin: the top bar's message (recipes, hints) shown over the view; click to dismiss -->
+    <div id="viewMsg" hidden></div>
+    <div class="view-ctl">
+      <button type="button" id="btnRotate" class="on" title="Auto-rotate">ROT</button>
+      <button type="button" id="btnView" title="Camera: full pipe / mouth">FULL</button>
+      <label title="Transparency of the pipe wall (X-ray)">X-RAY<input type="range" id="xray" min="0" max="1" step="0.01" value="0.4"></label>
+      <label title="Strobe: seconds on screen per period of the sound">STROBE<input type="range" id="strobe" min="0" max="1" step="0.01" value="0.45"><span id="strobeVal">2.0s</span></label>
+    </div>
+    <div class="replay-strip" id="replayStrip" hidden>
+      <div class="rp-row">
+        <select id="rpSelect" aria-label="Data to replay"></select>
+        <button type="button" id="rpPlay" class="rp-btn">▶</button>
+        <span class="rp-time" id="rpTime">0.0 / 0.0 s</span>
+        <span class="rp-desc" id="rpDesc"></span>
+      </div>
+      <canvas id="rpTimeline" aria-label="Timeline"></canvas>
+    </div>
+  </section>
+
+  <!-- ===================== right ===================== -->
+  <section id="right">
+    <div class="mfd" id="annun">
+      <div class="mfd-h"><span class="tag">06</span>STATUS</div>
+      <div class="ann-grid">
+        <div class="ann" id="an-sound">speaking<b>SOUND</b></div>
+        <div class="ann" id="an-over">upper mode<b>OVERBLOW</b></div>
+        <div class="ann" id="an-under">not speaking<b>UNDER</b></div>
+        <div class="ann" id="an-stop">top closed<b>STOPPED</b></div>
+        <div class="ann" id="an-gas">not air<b>GAS</b></div>
+        <div class="ann" id="an-lock">length corr.<b>LOCK</b></div>
+        <div class="ann" id="an-reset">diverged<b>RESET</b></div>
+        <div class="ann" id="an-lim">output<b>LIMIT</b></div>
+      </div>
+    </div>
+    <div class="mfd" id="jetPanel">
+      <div class="mfd-h"><span class="tag">07</span>JET SECTION</div>
+      <canvas id="jetScope"></canvas>
+    </div>
+    <div class="mfd" id="grp-lab"><div class="mfd-h"><span class="tag">08</span>LAB<button type="button" class="mfd-btn" id="btnMatrix" title="Modulation matrix">MATRIX</button></div><div class="prms"></div></div>
+    <div class="mfd" id="grp-mallet"><div class="mfd-h"><span class="tag">08</span>MALLET</div><div class="prms"></div></div>
+  </section>
+
+  <!-- ===================== plugin: modulation matrix (over the pipe view) ===================== -->
+  <section class="mfd" id="matrix" hidden>
+    <div class="mfd-h"><span class="tag">MX</span>MODULATION MATRIX<em>THE KNOBS AS EACH PIPE FEELS THEM</em><button type="button" class="mx-close" id="matrixClose" title="Close">×</button></div>
+    <div class="mx-body">
+      <div class="mx-head"><span>#</span><span>SOURCE</span><span></span><span>TARGET</span><span>AMOUNT</span><span>NOW</span></div>
+      <div class="mx-slot"><span class="mx-n">1</span><select class="mx-sel" id="mxSrc1" aria-label="Slot 1 source"></select><span class="mx-arrow">→</span><select class="mx-sel" id="mxDst1" aria-label="Slot 1 target"></select><div class="mx-amt" id="grp-mod1"><div class="prms"></div></div><div class="mx-out"><div class="mx-of" id="mxOut1"></div></div></div>
+      <div class="mx-slot"><span class="mx-n">2</span><select class="mx-sel" id="mxSrc2" aria-label="Slot 2 source"></select><span class="mx-arrow">→</span><select class="mx-sel" id="mxDst2" aria-label="Slot 2 target"></select><div class="mx-amt" id="grp-mod2"><div class="prms"></div></div><div class="mx-out"><div class="mx-of" id="mxOut2"></div></div></div>
+      <div class="mx-slot"><span class="mx-n">3</span><select class="mx-sel" id="mxSrc3" aria-label="Slot 3 source"></select><span class="mx-arrow">→</span><select class="mx-sel" id="mxDst3" aria-label="Slot 3 target"></select><div class="mx-amt" id="grp-mod3"><div class="prms"></div></div><div class="mx-out"><div class="mx-of" id="mxOut3"></div></div></div>
+      <div class="mx-slot"><span class="mx-n">4</span><select class="mx-sel" id="mxSrc4" aria-label="Slot 4 source"></select><span class="mx-arrow">→</span><select class="mx-sel" id="mxDst4" aria-label="Slot 4 target"></select><div class="mx-amt" id="grp-mod4"><div class="prms"></div></div><div class="mx-out"><div class="mx-of" id="mxOut4"></div></div></div>
+      <div class="mx-cols">
+        <div><h5>SOURCES<em>AS THE FOCUS PIPE SEES THEM</em></h5><div id="mxSources"></div></div>
+        <div><h5>LFO · ENVELOPE</h5><div id="grp-modx"><div class="prms"></div></div>
+          <p class="mx-note">Each slot moves its target by <b>amount × source</b> in the target's own travel: +100 % with the source at 1 pushes the knob across its whole slider. Every pipe has its own velocity, key, envelope, level, overblowing and pitch deviation, so one chord can be shaped differently in each pipe. Amber markers on the side panels show where the matrix holds each knob now.</p>
+          <p class="mx-note">Try <b>Overblow → Open/Stopped</b>: the moment a pipe overblows, its top closes.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== bottom ===================== -->
+  <section id="bottom">
+    <div class="mfd" id="specPanel">
+      <div class="mfd-h"><span class="tag">09</span>SPECTROGRAM</div>
+      <div class="spec-wrap">
+        <canvas id="spec"></canvas>
+        <canvas id="specOver"></canvas>
+      </div>
+      <div class="harm-wrap">
+        <canvas id="harm"></canvas>
+      </div>
+    </div>
+    <div class="mfd" id="instPanel">
+      <div class="mfd-h"><span class="tag">10</span>INSTRUMENTS</div>
+      <canvas id="inst"></canvas>
+    </div>
+  </section>
+
+</div>
+</div>
+
+<!-- ===================== overlays ===================== -->
+<div id="boot">
+  <div class="boot-box">
+    <div class="boot-logo">OkumuLab<span>1</span></div>
+    <div class="boot-sub">PRINZIPAL 8' FLUE PIPE · PHYSICAL MODEL · SCREEN PROTOTYPE</div>
+    <ul class="boot-list" id="bootList"></ul>
+    <button type="button" id="btnEngage" disabled>ENGAGE</button>
+    <p class="boot-note">The browser needs a click before it can play sound. ENGAGE starts the audio engine and MIDI.</p>
+  </div>
+</div>
+
+<div id="midimon" hidden>
+  <div class="mon-h">MIDI MONITOR<button type="button" id="monClose">×</button></div>
+  <div class="mon-devs" id="monDevs"></div>
+  <pre id="monLog"></pre>
+</div>
+
+<div id="help" hidden>
+  <div class="help-box">
+    <div class="help-h">CONTROLS AND MAPPING<button type="button" id="helpClose">×</button></div>
+    <div class="help-cols">
+      <div>
+        <h4>COMPUTER KEYBOARD</h4>
+        <table>
+          <tr><td>A W S E D F T G Y H U J K O L P</td><td>One and a half octaves from c¹ (white keys A S D F G H J K L)</td></tr>
+          <tr><td>Z / X</td><td>Octave down / up</td></tr>
+          <tr><td>1–8</td><td>Pad A (pressure rises while held)</td></tr>
+          <tr><td>Shift + 1–8</td><td>Pad B (wind pipes)</td></tr>
+          <tr><td>Space</td><td>Sustain (hold the pallets open)</td></tr>
+          <tr><td>Esc</td><td>All notes off</td></tr>
+        </table>
+        <h4>SCREEN</h4>
+        <table>
+          <tr><td>Drag the pipe</td><td>Rotate</td></tr>
+          <tr><td>Mouse wheel</td><td>Zoom (double-click to reset)</td></tr>
+          <tr><td>Sliders</td><td>Drag or scroll. Shift-drag for fine steps, double-click for the default</td></tr>
+          <tr><td>RESET</td><td>Every parameter back to its default (OUT level and view settings stay)</td></tr>
+          <tr class="plugin-only"><td>Right-click a slider</td><td>MIDI learn: move a controller to assign it (right-click again to cancel)</td></tr>
+          <tr class="plugin-only"><td>Recipe menu</td><td>Experiment recipes (the host's programs): the canonical pipe with a few knobs moved; the top bar says what to listen for</td></tr>
+          <tr class="plugin-only"><td>MATRIX</td><td>Modulation matrix (LAB panel): four slots, source → target × amount, per pipe. Amber markers show where it holds each knob</td></tr>
+          <tr class="plugin-only"><td>WIND / MALLET</td><td>Blow the pipe, or strike its body with a hard mallet. Struck: velocity is the mallet speed, key up brings the felt damper (pedal holds it off); dimmed sliders do nothing to a struck pipe</td></tr>
+        </table>
+      </div>
+      <div>
+        <h4>MIDI MAPPING (DEFAULTS)</h4>
+        <table>
+          <tr><td>Notes</td><td>Pipes; velocity sets how fast the pallet opens</td></tr>
+          <tr><td>CC 74 71 76 77</td><td>MIDI CONTROLLER knobs 1–4: cut-up / labium offset / scale / open↔stopped</td></tr>
+          <tr><td>CC 93 18 19 16</td><td>MIDI CONTROLLER knobs 5–8: wind pressure / gas / temperature / tremulant</td></tr>
+          <tr><td>CC 82 83 85 17</td><td>Wind pressure / tremulant / pitch lock / reverb (faders)</td></tr>
+          <tr><td>Pitch bend</td><td>Length glide (±12 semitones)</td></tr>
+          <tr><td>CC1</td><td>Wind FM depth</td></tr>
+          <tr><td>Ch 10, notes 36–43</td><td>Modulation pads; poly pressure moves eight physical parameters</td></tr>
+          <tr><td>Ch 10, notes 44–51</td><td>Wind pipes; one pad is one pipe, pressure is its wind</td></tr>
+          <tr><td>CC11 / CC64</td><td>Wind pressure (expression pedal) / hold pallets</td></tr>
+        </table>
+        <h4 class="plugin-only-h">LAB (PLUGIN)</h4>
+        <table class="plugin-only-t">
+          <tr><td>Nicking</td><td>Nicks on the languid: a thicker, less amplifying jet; calmer speech, less chiff and noise</td></tr>
+          <tr><td>Side hole</td><td>An open hole in the wall, its place along the body. It is a tone hole: it raises the pitch by its acoustic interval (most near the middle of the bore); pitch lock removes only the jet's pull</td></tr>
+          <tr><td>FM target</td><td>Physical FM at audio rate of the wind, the pipe length (bore delay) or the upper lip (labium offset)</td></tr>
+          <tr><td>Cross drive</td><td>Each jet is also shaken by the other sounding pipes' mouth flow</td></tr>
+          <tr><td>Notes 0–127</td><td>Pipes beyond the compass: the scale is extrapolated (20 m pipes at the bottom, a few mm at the top)</td></tr>
+        </table>
+        <p class="help-note">The defaults follow the MiniLab 3 user program, but any controller that sends these messages works. Use the MIDI monitor (MON) to see what a controller sends.</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="js/engine-core.js"></script>
+<script src="data/step1_data.js"></script>
+<script src="js/params.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/bridge.js"></script>
+<script src="js/pipe3d.js"></script>
+<script src="js/hud.js"></script>
+<script src="js/instruments.js"></script>
+<script src="js/mallet.js"></script>
+<script src="js/matrix.js"></script>
+<script src="js/midi.js"></script>
+<script src="js/replay.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

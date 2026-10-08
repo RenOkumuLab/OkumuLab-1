@@ -33,7 +33,7 @@ public:
     void paint (juce::Graphics&) override;
     void resized() override;
 
-    /* WebView2 runtime present (otherwise the native editor is used) */
+    /* the system's web view present: WebView2 (Windows), WKWebView (macOS), WebKitGTK (Linux); otherwise the native editor */
     static bool available();
 
     static constexpr int kW = 1280, kH = 800;      // the page scales its 1600 x 1000 stage to fit

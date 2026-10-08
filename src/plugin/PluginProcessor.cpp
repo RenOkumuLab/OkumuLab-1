@@ -5,9 +5,9 @@
 #include "PluginEditor.h"
 #include "WebEditor.h"
 #include "Presets.h"
+#include "FpEnv.h"
 
 #include <cstring>
-#include <xmmintrin.h>
 
 using namespace okl;
 
@@ -16,12 +16,10 @@ namespace
 /* the floating-point mode of every block, whatever the host's audio thread uses: round to nearest, exceptions
    masked, denormals flushed to zero, as the standalone's own audio thread runs (another rounding mode set by a
    host changed the sound engine's results; the MIDI router's note-on work runs here too); the host's mode comes
-   back after the block */
-struct ScopedEngineFpMode
+   back after the block (FpEnv.h: x86-64 and ARM64) */
+struct ScopedEngineFpMode : fpenv::ScopedEngineMode
 {
-    const unsigned csr = _mm_getcsr();
-    ScopedEngineFpMode() { _mm_setcsr (0x1F80u | 0x8040u); }
-    ~ScopedEngineFpMode() { _mm_setcsr (csr); }
+    ScopedEngineFpMode() : fpenv::ScopedEngineMode (true) {}
 };
 
 juce::NormalisableRange<float> rangeFor (const ParamDef& d)
@@ -519,7 +517,8 @@ void OkumuLabProcessor::setStateInformation (const void* data, int sizeInBytes)
     for (auto& m : midiPending) m.store (-1.0f);
 }
 
-/* the WebView2 + Three.js screen (Phase 4); the native cockpit screen if WebView2 is missing */
+/* the web + Three.js screen (Phase 4); the native cockpit screen if the system's web view is missing
+   (WebView2 on Windows, WebKitGTK on Linux) */
 juce::AudioProcessorEditor* OkumuLabProcessor::createEditor()
 {
     const bool forceNative = juce::SystemStats::getEnvironmentVariable ("OKL_NATIVE_UI", {}).isNotEmpty();

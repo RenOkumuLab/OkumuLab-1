@@ -2,12 +2,16 @@
  * OkumuLab 1 — Labium DSP core (see LabiumCore.h)
  */
 #include "LabiumCore.h"
+#include "Arch.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <emmintrin.h>
+#if OKL_X86
+ #include <emmintrin.h>
+#endif
 
 namespace okl
 {
@@ -41,7 +45,11 @@ double interp (double x, const double* xs, const double* ys, int n)
 inline double fastTanh (double x)
 {
     // branchless clamp: the jet swings through saturation every period (branches would mispredict)
+#if OKL_X86
     const double xc = _mm_cvtsd_f64 (_mm_min_sd (_mm_max_sd (_mm_set_sd (x), _mm_set_sd (-7.90531110763549805)), _mm_set_sd (7.90531110763549805)));
+#else
+    const double xc = std::fmin (std::fmax (x, -7.90531110763549805), 7.90531110763549805);     // (fmax / fmin on ARM64)
+#endif
     // Estrin's scheme: short dependency chains (this sits on the per-sample critical path)
     const double x2 = xc * xc, x4 = x2 * x2, x8 = x4 * x4;
     const double p01 = 4.89352455891786e-03 + 6.37261928875436e-04 * x2;
@@ -902,8 +910,13 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
                pressure differences). The square-root law is infinitely stiff at zero and its Euler
                steps kept the foot pressure bouncing around 0 after the pallet closed. */
             const double adp = dp < 0 ? -dp : dp, apf = pfL > 0 ? pfL : 0.0;
-            double sq[2];      // both square roots in one SSE2 instruction
+            double sq[2];      // both square roots in one SSE2 instruction (x86-64)
+#if OKL_X86
             _mm_storeu_pd (sq, _mm_sqrt_pd (_mm_set_pd (k2rL * std::max (adp, kPLin), k2rL * std::max (apf, kPLin))));
+#else
+            sq[1] = std::sqrt (k2rL * std::max (adp, kPLin));
+            sq[0] = std::sqrt (k2rL * std::max (apf, kPLin));
+#endif
             const double gt = adp < kPLin ? sq[1] * adp / kPLin : sq[1];
             const double gf = apf < kPLin ? sq[0] * apf / kPLin : sq[0];
             const double qt = dp > 0 ? StoeL * gt : -StoeL * gt;

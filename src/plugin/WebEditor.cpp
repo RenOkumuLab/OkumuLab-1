@@ -35,6 +35,7 @@ double nowMs() { return juce::Time::getMillisecondCounterHiRes(); }
 
 juce::DynamicObject::Ptr obj() { return new juce::DynamicObject(); }
 
+#if JUCE_WINDOWS
 /* WebView2's profile, in the user's folder. Without one, WebView2 makes "<host>.exe.WebView2" next to the host's exe
    and does not start where it cannot (a DAW in Program Files): the check below failed there and the DAW got the
    native screen */
@@ -45,9 +46,13 @@ juce::File webViewDataFolder()
     if (dir.createDirectory().wasOk()) return dir;
     return juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("OkumuLab 1 WebView2");
 }
+#endif
 
+/* Windows: WebView2. macOS: WKWebView (part of the system). Linux: WebKitGTK, loaded when the screen opens
+   (libwebkit2gtk-4.1 or 4.0; without it the native screen opens) */
 Opt backendOptions()
 {
+#if JUCE_WINDOWS
     return Opt {}
         .withBackend (Opt::Backend::webview2)
         .withWinWebView2Options (Opt::WinWebView2 {}
@@ -55,6 +60,9 @@ Opt backendOptions()
                                      .withBackgroundColour (juce::Colour (0xff020509))
                                      .withStatusBarDisabled()
                                      .withBuiltInErrorPageDisabled());
+#else
+    return Opt {}.withBackend (Opt::Backend::defaultBackend);
+#endif
 }
 } // namespace
 

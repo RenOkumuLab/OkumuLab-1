@@ -2,12 +2,13 @@
  * OkumuLab 1 — engine (see Engine.h)
  */
 #include "Engine.h"
+#include "FpEnv.h"
 #include "Simd.h"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstring>
-#include <xmmintrin.h>
 
 namespace okl
 {
@@ -78,13 +79,8 @@ namespace
 {
 /* the floating-point mode the engine computes in, whatever the calling thread uses (a host's thread may round
    otherwise or unmask exceptions): round to nearest, exceptions masked, as on a default thread such as the
-   standalone's; audio also flushes denormals. The caller's mode comes back afterwards. */
-struct ScopedFpMode
-{
-    const unsigned csr = _mm_getcsr();
-    explicit ScopedFpMode (bool flushDenormals) { _mm_setcsr (0x1F80u | (flushDenormals ? 0x8040u : 0u)); }
-    ~ScopedFpMode() { _mm_setcsr (csr); }
-};
+   standalone's; audio also flushes denormals. The caller's mode comes back afterwards. (FpEnv.h: x86-64 and ARM64) */
+using ScopedFpMode = fpenv::ScopedEngineMode;
 } // namespace
 
 Engine::Engine()

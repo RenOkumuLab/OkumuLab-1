@@ -1,0 +1,118 @@
+# OkumuLab 1 — builds the macOS and Linux packages on GitHub-hosted machines
+#
+# Every push to main (or "Run workflow" on the Actions page): build, then the packages
+#   OkumuLab1-<version>-macOS.zip              VST3, Audio Unit, app (Apple silicon + Intel, ad hoc signed)
+#   OkumuLab1-<version>-linux-x86_64.tar.gz    VST3, app
+# are kept as the run's artifacts for 3 days (download them from the run's page while signed in). Nothing is put
+# on Releases. If a build fails, the run's page shows the compiler's errors (readable without signing in).
+
+name: build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  # ------------------------------------------------------------------------------------------------ macOS
+  macos:
+    name: macOS (universal)
+    runs-on: macos-14
+    timeout-minutes: 90
+    env:
+      A: build/OkumuLab1_artefacts/Release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Tools
+        run: brew install ninja
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" 2>&1 | tee configure.log
+
+      - name: Build
+        run: cmake --build build --parallel --target OkumuLab1_All 2>&1 | tee build.log
+
+      - name: Sign (ad hoc) and package
+        run: |
+          V=$(sed -n 's/^project(OkumuLab1 VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          D="OkumuLab1-$V-macOS"
+          mkdir "$D"
+          cp -R "$A/VST3/OkumuLab 1.vst3" "$A/AU/OkumuLab 1.component" "$A/Standalone/OkumuLab 1.app" "$D/"
+          for b in "$D/OkumuLab 1.vst3" "$D/OkumuLab 1.component" "$D/OkumuLab 1.app"; do
+            codesign --force --deep --sign - "$b"
+            lipo -archs "$b/Contents/MacOS/"* | sed "s|^|$(basename "$b"): |"
+          done
+          cp LICENSE THIRD_PARTY_NOTICES.md "$D/"
+          cp -R licenses "$D/" && rm -f "$D"/licenses/WebView2-*
+          sed "s/@VERSION@/$V/" packaging/README_macOS.txt > "$D/README.txt"
+          ditto -c -k --sequesterRsrc --keepParent "$D" "$D.zip"
+          ls -l "$D.zip"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OkumuLab1-macOS
+          path: OkumuLab1-*-macOS.zip
+          retention-days: 3
+
+      - name: Errors
+        if: failure()
+        run: bash .github/ci_summary.sh "macOS" configure.log build.log
+
+  # ------------------------------------------------------------------------------------------------ Linux
+  linux:
+    name: Linux (x86-64)
+    runs-on: ubuntu-22.04          # glibc 2.35: runs on Ubuntu 22.04, Debian 12, Fedora 36 and later
+    timeout-minutes: 90
+    env:
+      A: build/OkumuLab1_artefacts/Release
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ninja-build pkg-config \
+            libasound2-dev libjack-jackd2-dev libfreetype-dev libfontconfig1-dev libcurl4-openssl-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | tee configure.log
+
+      - name: Build
+        run: cmake --build build --parallel --target OkumuLab1_All 2>&1 | tee build.log
+
+      - name: Package
+        run: |
+          V=$(sed -n 's/^project(OkumuLab1 VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          D="OkumuLab1-$V-linux-x86_64"
+          mkdir "$D"
+          cp -R "$A/VST3/OkumuLab 1.vst3" "$A/Standalone/OkumuLab 1" "$D/"
+          strip --strip-unneeded "$D/OkumuLab 1" "$D/OkumuLab 1.vst3/Contents/x86_64-linux/"*.so
+          cp LICENSE THIRD_PARTY_NOTICES.md "$D/"
+          cp -R licenses "$D/" && rm -f "$D"/licenses/WebView2-* "$D"/licenses/AudioUnitSDK-*
+          sed "s/@VERSION@/$V/" packaging/README_Linux.txt > "$D/README.txt"
+          tar -czf "$D.tar.gz" "$D"
+          ls -l "$D.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: OkumuLab1-Linux
+          path: OkumuLab1-*-linux-x86_64.tar.gz
+          retention-days: 3
+
+      - name: Errors
+        if: failure()
+        run: bash .github/ci_summary.sh "Linux" configure.log build.log

@@ -1,15 +1,20 @@
 /*
  * OkumuLab 1 — AVX2 + FMA versions of the hot loops (see Simd.h). This file alone is
  * compiled for AVX2; it runs only where Simd.cpp has found AVX2, FMA and OS support.
+ * On CPUs other than x86-64 the two names run the baseline (never chosen there: cpuHasAvx2Fma() is false).
  */
 #include "Simd.h"
+#include "Arch.h"
 
-#include <immintrin.h>
+#if OKL_X86
+ #include <immintrin.h>
+#endif
 
 namespace okl
 {
 namespace simd_detail
 {
+#if OKL_X86
 
 void modalRingAvx2 (int n, int na, double* zr, double* zi, const double* pr, const double* pim,
                     const double* oa, const double* ob, double* out)
@@ -69,5 +74,20 @@ void cmacAvx2 (int nb, const float* xr, const float* xi, const float* lr, const 
     _mm256_zeroupper();
 }
 
+#else
+
+void modalRingAvx2 (int n, int na, double* zr, double* zi, const double* pr, const double* pim,
+                    const double* oa, const double* ob, double* out)
+{
+    modalRingBase (n, na, zr, zi, pr, pim, oa, ob, out);
+}
+
+void cmacAvx2 (int nb, const float* xr, const float* xi, const float* lr, const float* li, const float* rr, const float* ri,
+               float* aLr, float* aLi, float* aRr, float* aRi)
+{
+    cmacBase (nb, xr, xi, lr, li, rr, ri, aLr, aLi, aRr, aRi);
+}
+
+#endif
 } // namespace simd_detail
 } // namespace okl

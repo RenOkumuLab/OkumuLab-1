@@ -7,7 +7,6 @@
 #include <algorithm>
 #include <cmath>
 #include <complex>
-#include <emmintrin.h>
 
 namespace okl
 {

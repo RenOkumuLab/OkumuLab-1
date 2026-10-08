@@ -1,14 +1,17 @@
 /*
- * OkumuLab 1 — SSE2 baseline and the choice of instruction set (see Simd.h)
+ * OkumuLab 1 — the baseline (SSE2 on x86-64, plain C++ elsewhere) and the choice of instruction set (see Simd.h)
  */
 #include "Simd.h"
+#include "Arch.h"
 
 #include <cstdlib>
-#include <emmintrin.h>
-#if defined(_MSC_VER)
- #include <intrin.h>
-#else
- #include <cpuid.h>
+#if OKL_X86
+ #include <emmintrin.h>
+ #if defined(_MSC_VER)
+  #include <intrin.h>
+ #else
+  #include <cpuid.h>
+ #endif
 #endif
 
 namespace okl
@@ -16,6 +19,8 @@ namespace okl
 
 namespace simd_detail
 {
+#if OKL_X86
+
 bool cpuHasAvx2Fma()
 {
 #if defined(_MSC_VER)
@@ -40,7 +45,7 @@ bool cpuHasAvx2Fma()
 #endif
 }
 
-void modalRingSse2 (int n, int na, double* zr, double* zi, const double* pr, const double* pim,
+void modalRingBase (int n, int na, double* zr, double* zi, const double* pr, const double* pim,
                     const double* oa, const double* ob, double* out)
 {
     for (int t = 0; t < n; ++t)
@@ -62,7 +67,7 @@ void modalRingSse2 (int n, int na, double* zr, double* zi, const double* pr, con
     }
 }
 
-void cmacSse2 (int nb, const float* xr, const float* xi, const float* lr, const float* li, const float* rr, const float* ri,
+void cmacBase (int nb, const float* xr, const float* xi, const float* lr, const float* li, const float* rr, const float* ri,
                float* aLr, float* aLi, float* aRr, float* aRi)
 {
     int k = 0;
@@ -83,6 +88,40 @@ void cmacSse2 (int nb, const float* xr, const float* xi, const float* lr, const 
     }
 }
 
+#else   // ARM64 and other CPUs: the same arithmetic in plain C++ (the compiler vectorises the inner loops)
+
+bool cpuHasAvx2Fma() { return false; }
+
+void modalRingBase (int n, int na, double* zr, double* zi, const double* pr, const double* pim,
+                    const double* oa, const double* ob, double* out)
+{
+    for (int t = 0; t < n; ++t)
+    {
+        double acc0 = 0, acc1 = 0;          // even and odd modes, summed as the SSE2 version's two lanes
+        for (int k = 0; k < na; k += 2)
+        {
+            const double nr0 = pr[k] * zr[k] - pim[k] * zi[k], ni0 = pr[k] * zi[k] + pim[k] * zr[k];
+            const double nr1 = pr[k + 1] * zr[k + 1] - pim[k + 1] * zi[k + 1], ni1 = pr[k + 1] * zi[k + 1] + pim[k + 1] * zr[k + 1];
+            zr[k] = nr0; zi[k] = ni0; zr[k + 1] = nr1; zi[k + 1] = ni1;
+            acc0 += oa[k] * nr0 + ob[k] * ni0;
+            acc1 += oa[k + 1] * nr1 + ob[k + 1] * ni1;
+        }
+        out[t] = acc0 + acc1;
+    }
+}
+
+void cmacBase (int nb, const float* xr, const float* xi, const float* lr, const float* li, const float* rr, const float* ri,
+               float* aLr, float* aLi, float* aRr, float* aRi)
+{
+    for (int k = 0; k < nb; ++k)
+    {
+        const float a = xr[k], b = xi[k];
+        aLr[k] += a * lr[k] - b * li[k]; aLi[k] += a * li[k] + b * lr[k];
+        aRr[k] += a * rr[k] - b * ri[k]; aRi[k] += a * ri[k] + b * rr[k];
+    }
+}
+
+#endif
 } // namespace simd_detail
 
 namespace
@@ -91,8 +130,8 @@ using namespace simd_detail;
 struct Dispatch
 {
     bool avx2 = cpuHasAvx2Fma() && ! std::getenv ("OKL_NO_AVX2");
-    decltype (&modalRingSse2) ring = avx2 ? &simd_detail::modalRingAvx2 : &modalRingSse2;
-    decltype (&cmacSse2) mac = avx2 ? &simd_detail::cmacAvx2 : &cmacSse2;
+    decltype (&modalRingBase) ring = avx2 ? &simd_detail::modalRingAvx2 : &modalRingBase;
+    decltype (&cmacBase) mac = avx2 ? &simd_detail::cmacAvx2 : &cmacBase;
 };
 const Dispatch& dispatch()
 {
@@ -113,6 +152,15 @@ void cmac (int nb, const float* xr, const float* xi, const float* lr, const floa
     dispatch().mac (nb, xr, xi, lr, li, rr, ri, aLr, aLi, aRr, aRi);
 }
 
-const char* simdLevel() { return dispatch().avx2 ? "AVX2+FMA" : "SSE2"; }
+const char* simdLevel()
+{
+#if OKL_X86
+    return dispatch().avx2 ? "AVX2+FMA" : "SSE2";
+#elif OKL_ARM64
+    return "C++ (NEON)";
+#else
+    return "C++";
+#endif
+}
 
 } // namespace okl

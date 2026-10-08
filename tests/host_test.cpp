@@ -6,7 +6,7 @@
  * Checks: plugin description, sound / silence after release, channel-10 pads,
  * controllers -> host parameters, pitch bend, state save/restore, sample rates
  * and block sizes (incl. odd and varying), pitch lock through the plugin,
- * CPU load with 16 / 32 voices, and the screen: the plugin's WebView2 editor
+ * CPU load with 16 / 32 voices, and the screen: the plugin's web editor (WebView2 / WKWebView / WebKitGTK)
  * opened in a window while a real-time audio thread plays (the plugin's
  * OKL_PERFTEST session: frame rate, audio callbacks, page errors).
  * Writes a few renders to test_out/ for listening.
@@ -20,12 +20,17 @@
 #include <cstdio>
 #include <cstdlib>
 #include <vector>
-#include <xmmintrin.h>
+#if defined(__x86_64__) || defined(_M_X64)
+ #include <xmmintrin.h>
+ #define OKL_HOST_X86 1
+#else
+ #define OKL_HOST_X86 0
+#endif
 
 namespace
 {
 int g_fail = 0;
-int g_hostRounding = 0;     // --render: the host thread's floating-point rounding mode while it calls the plugin (OKL_HOST_ROUNDING)
+int g_hostRounding = 0;     // --render: the host thread's floating-point rounding mode while it calls the plugin (OKL_HOST_ROUNDING, x86-64)
 void check (bool ok, const juce::String& what)
 {
     std::printf ("  %s %s\n", ok ? "ok  " : "FAIL", what.toRawUTF8());
@@ -58,10 +63,14 @@ juce::AudioBuffer<float> render (juce::AudioPluginInstance& p, double sr, int bs
         blk.setSize (2, m, false, false, true);
         blk.clear();
         const auto t0 = juce::Time::getHighResolutionTicks();
+#if OKL_HOST_X86
         const unsigned csr = _mm_getcsr();
         if (g_hostRounding > 0) _mm_setcsr ((csr & ~0x6000u) | ((unsigned) (g_hostRounding & 3) << 13));     // only while the plugin runs
         p.processBlock (blk, mb);
         _mm_setcsr (csr);
+#else
+        p.processBlock (blk, mb);
+#endif
         busy += juce::Time::highResolutionTicksToSeconds (juce::Time::getHighResolutionTicks() - t0);
         for (int ch = 0; ch < 2; ++ch) out.copyFrom (ch, pos, blk, ch, 0, m);
         pos += m;
@@ -196,8 +205,12 @@ int renderLog (const juce::String& events, const juce::String& wavOut, const juc
     // thread with that floating-point rounding mode
     if (const int ra = juce::SystemStats::getEnvironmentVariable ("OKL_HOST_ROUNDING_ALL", "0").getIntValue() & 3; ra > 0)
     {
+#if OKL_HOST_X86
         _mm_setcsr ((_mm_getcsr() & ~0x6000u) | ((unsigned) ra << 13));
         std::printf ("whole plugin on a thread with rounding mode %d\n", ra);
+#else
+        std::printf ("OKL_HOST_ROUNDING_ALL: x86-64 only, ignored\n");
+#endif
     }
     juce::VST3PluginFormat fmt;
     juce::OwnedArray<juce::PluginDescription> descs;
@@ -569,7 +582,7 @@ int main (int argc, char** argv)
             std::printf ("  audio thread: %d blocks\n", audio.blocks.load());
             check (! audio.bad, "output finite and within full scale while the screen runs");
             const auto r = juce::JSON::parse (editorReport);
-            check (r.isObject(), "the WebView2 screen loaded, played the session and reported (" + editorReport.getFileName() + ")");
+            check (r.isObject(), "the web screen loaded, played the session and reported (" + editorReport.getFileName() + ")");
             if (r.isObject())
             {
                 const auto f = r["fps"], a = r["audio"], s = r["screen"];

@@ -5,7 +5,7 @@
  * prototype, the focus pipe's physical state, the pitch-lock meter, the
  * standing wave of the last period capture and the mouth signal. Since Phase 4
  * the WebView + Three.js screen (WebEditor) is used; this one is the fallback
- * when WebView2 is not available (or OKL_NATIVE_UI is set).
+ * when the system's web view is not available (WebView2 on Windows, WebKitGTK on Linux) or OKL_NATIVE_UI is set.
  */
 #pragma once
 

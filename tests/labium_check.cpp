@@ -30,7 +30,8 @@
 #include <random>
 #include <string>
 #include <vector>
-#include <xmmintrin.h>
+
+#include "FpEnv.h"
 
 
 
@@ -1538,7 +1539,7 @@ void testLab()
 void testSimd()
 {
     std::printf ("\n== 9. SIMD: the wall's modal ring and the reverb's spectral multiply-accumulate (this CPU: %s) ==\n", simdLevel());
-    if (! simd_detail::cpuHasAvx2Fma()) { std::printf ("  no AVX2 + FMA here: only the SSE2 versions run\n"); return; }
+    if (! simd_detail::cpuHasAvx2Fma()) { std::printf ("  no AVX2 + FMA here: only the baseline (%s) runs\n", simdLevel()); return; }
     std::mt19937 rng (5);
     std::uniform_real_distribution<double> U (-1.0, 1.0);
     // 64 decaying modes (|p| < 1), a 1 s ring at 48 kHz
@@ -1553,14 +1554,14 @@ void testSimd()
     std::vector<double> a (NS), b (NS);
     alignas(32) double zra[NA], zia[NA], zrb[NA], zib[NA];
     std::copy (zr0, zr0 + NA, zra); std::copy (zi0, zi0 + NA, zia); std::copy (zr0, zr0 + NA, zrb); std::copy (zi0, zi0 + NA, zib);
-    simd_detail::modalRingSse2 (NS, NA, zra, zia, pr, pim, oa, ob, a.data());
+    simd_detail::modalRingBase (NS, NA, zra, zia, pr, pim, oa, ob, a.data());
     simd_detail::modalRingAvx2 (NS, NA, zrb, zib, pr, pim, oa, ob, b.data());
     double dMax = 0, pk = 0;
     for (int i = 0; i < NS; ++i) { dMax = std::max (dMax, std::abs (a[(size_t) i] - b[(size_t) i])); pk = std::max (pk, std::abs (a[(size_t) i])); }
     auto timeRing = [&] (bool avx) {
         const auto t0 = std::chrono::steady_clock::now();
         for (int r = 0; r < 20; ++r)
-            (avx ? simd_detail::modalRingAvx2 : simd_detail::modalRingSse2) (NS, NA, zrb, zib, pr, pim, oa, ob, b.data());
+            (avx ? simd_detail::modalRingAvx2 : simd_detail::modalRingBase) (NS, NA, zrb, zib, pr, pim, oa, ob, b.data());
         return std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count() / 20.0;
     };
     const double tS = timeRing (false), tA = timeRing (true);
@@ -1575,7 +1576,7 @@ void testSimd()
     for (int i = 0; i < 4; ++i) { accA[i].assign (NB, 0.f); accB[i].assign (NB, 0.f); }
     for (int r = 0; r < 16; ++r)
     {
-        simd_detail::cmacSse2 (NB, x[0].data(), x[1].data(), h[0].data(), h[1].data(), h[2].data(), h[3].data(), accA[0].data(), accA[1].data(), accA[2].data(), accA[3].data());
+        simd_detail::cmacBase (NB, x[0].data(), x[1].data(), h[0].data(), h[1].data(), h[2].data(), h[3].data(), accA[0].data(), accA[1].data(), accA[2].data(), accA[3].data());
         simd_detail::cmacAvx2 (NB, x[0].data(), x[1].data(), h[0].data(), h[1].data(), h[2].data(), h[3].data(), accB[0].data(), accB[1].data(), accB[2].data(), accB[3].data());
     }
     double dm = 0, am = 0;
@@ -1583,7 +1584,7 @@ void testSimd()
     auto timeMac = [&] (bool avx) {
         const auto t0 = std::chrono::steady_clock::now();
         for (int r = 0; r < 20000; ++r)
-            (avx ? simd_detail::cmacAvx2 : simd_detail::cmacSse2) (NB, x[0].data(), x[1].data(), h[0].data(), h[1].data(), h[2].data(), h[3].data(), accB[0].data(), accB[1].data(), accB[2].data(), accB[3].data());
+            (avx ? simd_detail::cmacAvx2 : simd_detail::cmacBase) (NB, x[0].data(), x[1].data(), h[0].data(), h[1].data(), h[2].data(), h[3].data(), accB[0].data(), accB[1].data(), accB[2].data(), accB[3].data());
         return std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count() / 20000.0;
     };
     const double mS = timeMac (false), mA = timeMac (true);
@@ -1937,7 +1938,7 @@ int main (int argc, char** argv)
         const int blocks = 4000;
         for (int pass = 0; pass < 3; ++pass)
         {
-            if (pass == 1) _mm_setcsr (_mm_getcsr() | 0x8040);      // flush-to-zero + denormals-are-zero (the plugin's ScopedNoDenormals)
+            if (pass == 1) fpenv::set (fpenv::flushing (fpenv::get()));     // denormals flushed to zero, as the plugin's audio runs
             if (pass == 2) engineJet (v);                         // the jet as the engine runs it (P5 jitter, v1.0)
             const auto t0 = std::chrono::steady_clock::now();
             for (int i = 0; i < blocks; ++i) v.render (512, L.data(), R.data(), nullptr);

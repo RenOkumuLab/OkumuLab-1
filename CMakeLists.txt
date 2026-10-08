@@ -4,6 +4,10 @@ cmake_minimum_required(VERSION 3.22)
 # of cl.exe (Japanese here), which broke rc.exe's command line (RC1107) after a reconfigure
 set(CMAKE_NINJA_CMCLDEPS_RC OFF)
 
+# macOS: the oldest system the binaries run on (before project(); -DCMAKE_OSX_DEPLOYMENT_TARGET=... wins). For one
+# binary for Apple silicon and Intel Macs, configure with -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" (build.sh does)
+set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS version")
+
 project(OkumuLab1 VERSION 1.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -28,14 +32,25 @@ add_library(labium_dsp STATIC
     src/dsp/Simd.cpp
     src/dsp/SimdAvx2.cpp)
 target_include_directories(labium_dsp PUBLIC src/dsp)
-# P5: the AVX2 + FMA kernels (chosen at run time, Simd.cpp); everything else stays SSE2
+# linked into the plugin's shared module (VST3 .so on Linux)
+set_target_properties(labium_dsp PROPERTIES POSITION_INDEPENDENT_CODE ON)
+# P5: the AVX2 + FMA kernels (x86-64 only, chosen at run time, Simd.cpp); everything else stays SSE2. Other CPUs
+# (Apple silicon, ARM Linux) compile SimdAvx2.cpp to the baseline and need no flags.
 if(MSVC)
     set_source_files_properties(src/dsp/SimdAvx2.cpp PROPERTIES COMPILE_OPTIONS "/arch:AVX2")
-else()
+elseif(APPLE)
+    # (a universal binary passes the flags to its x86-64 half only)
+    if(CMAKE_OSX_ARCHITECTURES MATCHES "x86_64" OR (NOT CMAKE_OSX_ARCHITECTURES AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64"))
+        set_source_files_properties(src/dsp/SimdAvx2.cpp PROPERTIES COMPILE_OPTIONS "-Xarch_x86_64;-mavx2;-Xarch_x86_64;-mfma")
+    endif()
+elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
     set_source_files_properties(src/dsp/SimdAvx2.cpp PROPERTIES COMPILE_OPTIONS "-mavx2;-mfma")
 endif()
 if(MSVC)
     target_compile_options(labium_dsp PRIVATE /W4 /fp:precise /O2)
+else()
+    # no fused multiply-adds the source does not ask for: the same arithmetic as MSVC's /fp:precise
+    target_compile_options(labium_dsp PRIVATE -ffp-contract=off)
 endif()
 
 # offline checks: port vs Phase 1, pitch lock, CPU, stress, MIDI routing
@@ -46,6 +61,12 @@ if(MSVC)
     set_source_files_properties(tests/ref/labium_core.c PROPERTIES COMPILE_OPTIONS "/O2;/fp:precise;/wd4244")
     # the checks keep whole engines (32 voices with their mallet models) on the stack
     target_link_options(labium_check PRIVATE /STACK:33554432)
+else()
+    target_compile_options(labium_check PRIVATE -ffp-contract=off)
+    if(APPLE)
+        target_link_options(labium_check PRIVATE "LINKER:-stack_size,0x2000000")
+    endif()
+    # (Linux: the main thread's stack is the shell's limit; build.sh and the CI raise it with ulimit -s)
 endif()
 
 if(NOT OKL_WITH_PLUGIN)
@@ -53,9 +74,18 @@ if(NOT OKL_WITH_PLUGIN)
 endif()
 
 # ---------------------------------------------------------------- plugin
-# WebView2 SDK (NuGet package Microsoft.Web.WebView2, unpacked here) for the Phase 4 screen
-set(JUCE_WEBVIEW2_PACKAGE_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nuget")
+# the Phase 4 screen's web view: WebView2 on Windows (SDK = NuGet package Microsoft.Web.WebView2, unpacked here,
+# linked statically), WKWebView on macOS, WebKitGTK on Linux (headers at build time, loaded when the screen opens)
+if(WIN32)
+    set(JUCE_WEBVIEW2_PACKAGE_LOCATION "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nuget")
+endif()
 add_subdirectory(third_party/JUCE)
+
+# VST3 and the standalone app everywhere; Audio Unit on macOS (Logic Pro, GarageBand)
+set(OKL_FORMATS VST3 Standalone)
+if(APPLE)
+    list(APPEND OKL_FORMATS AU)
+endif()
 
 # the screen (web/: the Phase 2 page, Three.js, fonts), zipped and embedded in the plugin
 set(OKL_WEB_DIR "${CMAKE_CURRENT_SOURCE_DIR}/web")
@@ -89,8 +119,10 @@ juce_add_plugin(OkumuLab1
     IS_MIDI_EFFECT FALSE
     EDITOR_WANTS_KEYBOARD_FOCUS FALSE
     VST3_CATEGORIES Instrument Synth
-    FORMATS VST3 Standalone
+    AU_MAIN_TYPE kAudioUnitType_MusicDevice
+    FORMATS ${OKL_FORMATS}
     NEEDS_WEBVIEW2 TRUE
+    NEEDS_WEB_BROWSER TRUE
     COPY_PLUGIN_AFTER_BUILD FALSE)
 
 target_sources(OkumuLab1 PRIVATE
@@ -106,6 +138,10 @@ target_compile_definitions(OkumuLab1 PUBLIC
     JUCE_VST3_CAN_REPLACE_VST2=0
     JUCE_DISPLAY_SPLASH_SCREEN=0
     JUCE_REPORT_APP_USAGE=0)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    # the standalone app on Linux: JACK (and PipeWire's JACK) as well as ALSA; libjack is loaded at run time
+    target_compile_definitions(OkumuLab1 PUBLIC JUCE_JACK=1)
+endif()
 
 target_link_libraries(OkumuLab1
     PRIVATE

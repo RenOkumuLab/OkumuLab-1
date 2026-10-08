@@ -2,10 +2,11 @@
  * OkumuLab 1 — parameter table (see Params.h)
  */
 #include "Params.h"
+#include "FpEnv.h"
 
+#include <cmath>
 #include <cstdio>
 #include <cstring>
-#include <xmmintrin.h>
 
 namespace okl
 {
@@ -111,12 +112,7 @@ int paramIndex (const char* id)
    so that a value converts the same in every host and in the standalone (the caller's denormal mode is kept) */
 namespace
 {
-struct NearestRounding
-{
-    const unsigned csr = _mm_getcsr();
-    NearestRounding() { _mm_setcsr ((csr & 0x8040u) | 0x1F80u); }
-    ~NearestRounding() { _mm_setcsr (csr); }
-};
+using NearestRounding = fpenv::ScopedNearest;
 } // namespace
 
 double toNorm (const ParamDef& d, double v)

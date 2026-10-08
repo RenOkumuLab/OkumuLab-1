@@ -6,8 +6,9 @@
  *   cmac       the reverb's frequency-domain multiply-accumulate, one partition of the
  *              impulse response into both ears (Reverb.cpp)
  *
- * The baseline is SSE2 (every x64 CPU). On CPUs with AVX2 and FMA (and an OS that saves the
+ * On x86-64 the baseline is SSE2 (every x64 CPU). On CPUs with AVX2 and FMA (and an OS that saves the
  * YMM registers) the AVX2 versions in SimdAvx2.cpp are used, chosen once at start.
+ * On other CPUs (Apple silicon, ARM Linux) the baseline is plain C++ that the compiler vectorises (NEON).
  */
 #pragma once
 
@@ -23,15 +24,16 @@ void modalRing (int n, int na, double* zr, double* zi, const double* pr, const d
 void cmac (int nb, const float* xr, const float* xi, const float* lr, const float* li, const float* rr, const float* ri,
            float* aLr, float* aLi, float* aRr, float* aRi);
 
-/* "AVX2+FMA" or "SSE2": what this CPU runs (OKL_NO_AVX2=1 in the environment forces SSE2) */
+/* "AVX2+FMA", "SSE2" or "C++ (NEON)": what this CPU runs (OKL_NO_AVX2=1 in the environment forces SSE2) */
 const char* simdLevel();
 
 namespace simd_detail      // (both versions, for the checks)
 {
-bool cpuHasAvx2Fma();
-void modalRingSse2 (int n, int na, double* zr, double* zi, const double* pr, const double* pim,
+bool cpuHasAvx2Fma();      // (false on CPUs other than x86-64: there the AVX2 names run the baseline)
+/* the baseline: SSE2 on x86-64, plain C++ elsewhere */
+void modalRingBase (int n, int na, double* zr, double* zi, const double* pr, const double* pim,
                     const double* oa, const double* ob, double* out);
-void cmacSse2 (int nb, const float* xr, const float* xi, const float* lr, const float* li, const float* rr, const float* ri,
+void cmacBase (int nb, const float* xr, const float* xi, const float* lr, const float* li, const float* rr, const float* ri,
                float* aLr, float* aLi, float* aRr, float* aRi);
 void modalRingAvx2 (int n, int na, double* zr, double* zi, const double* pr, const double* pim,
                     const double* oa, const double* ob, double* out);

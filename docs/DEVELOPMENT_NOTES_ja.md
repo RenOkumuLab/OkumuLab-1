@@ -74,6 +74,15 @@ build.bat dsp      DSP コアと labium_check だけ（JUCE なし、数十秒�
 - 01〜10 の欄の見出しは番号と名前だけにしました（例：「01 MIDI CONTROLLER」）。右側の説明（8 KNOBS など）と、07 の「true scale / exaggerated」、09 の「output · log frequency」も除きました。08 LAB の MATRIX ボタンはそのままです。Mallet では 07 の名前が WALL SECTION に変わるのも以前のままです。
 - 予備のネイティブ画面（WebView2 がないときだけ使う）は変えていません。
 
+## macOS 版と Linux 版
+
+- **形式**：macOS は VST3、Audio Unit、スタンドアロン（Apple silicon と Intel の両方で動く 1 つのバイナリ、macOS 10.15 以降、署名は ad hoc）。Linux は VST3 とスタンドアロン（x86-64、glibc 2.35 以降）。
+- **ビルド**：`bash build.sh`（Windows の `build.bat` と同じ使い方。`bash build.sh dsp` は音源と labium_check だけ）。GitHub Actions（`.github/workflows/build.yml`）が push のたびに macOS と Linux でビルドし、配布用の zip / tar.gz を作る（実行結果のページの Artifacts に 3 日間。サインインしてダウンロードする）。Releases には何も置かない。
+- **CPU ごとの計算**：x86-64 は今までどおり SSE2 と AVX2+FMA（実行時に選択）。ARM64（Apple silicon、ARM の Linux）は同じ計算を素の C++ で書いた版（コンパイラが NEON にする）。浮動小数点のモード（丸めは最近接、例外はマスク、音声では非正規化数を 0 に）は `src/dsp/FpEnv.h` が x86-64 では MXCSR、ARM64 では FPCR で設定する。GCC / Clang では、ソースに書いていない積和の融合（FMA）をしない（`-ffp-contract=off`、MSVC の /fp:precise と同じ計算）。
+- **画面**：Windows は WebView2、macOS は WKWebView（OS に入っている）、Linux は WebKitGTK（libwebkit2gtk-4.1、画面を開くときに読み込む。ない場合はネイティブ画面）。ページ（`web/`）は同じ。
+- **Linux のスタンドアロン**：ALSA と JACK（PipeWire の JACK を含む。libjack は実行時に読み込む）。
+- **未確認のこと**：macOS と Linux はビルドまでで、試験（labium_check、pluginval など）も実機で音を聴いての確認もしていない。
+
 ## ホストのブロック長によるビリビリの修正（v1.0 修正版）
 
 - **症状**：SAVIHost（MME、44.1 kHz、バッファ 1764 サンプル）で鳴らすと、規準状態でもビリビリと鳴り、ピッチが +2.7 ¢ ほどずれ、管内の波形も乱れた。

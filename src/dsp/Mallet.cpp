@@ -2,6 +2,7 @@
  * OkumuLab 1 — Mallet mode (see Mallet.h)
  */
 #include "Mallet.h"
+#include "Bessel.h"
 #include "Simd.h"
 
 #include <algorithm>
@@ -277,9 +278,9 @@ bool finite (double x) { return x == x && std::abs (x) < 1e300; }
 /* J_n, Y_n and their derivatives at x (Z'_n = n/x Z_n - Z_{n+1}) */
 void besselJY (int n, double x, Bes& J, Bes& Y)
 {
-    const double jn = std::cyl_bessel_j ((double) n, x), jn1 = std::cyl_bessel_j ((double) n + 1, x);
+    const double jn = bessel::J (n, x), jn1 = bessel::J (n + 1, x);
     J = { jn, n / x * jn - jn1 };
-    double yn = std::cyl_neumann ((double) n, x), yn1 = std::cyl_neumann ((double) n + 1, x);
+    double yn = bessel::Y (n, x), yn1 = bessel::Y (n + 1, x);
     if (! finite (yn) || ! finite (yn1))
     {
         // tiny argument: Y_n ~ -(n-1)! (2/x)^n / pi (n >= 1)
@@ -294,9 +295,9 @@ void besselJY (int n, double x, Bes& J, Bes& Y)
 /* I_n, K_n and derivatives (I'_n = n/x I_n + I_{n+1}, K'_n = n/x K_n - K_{n+1}) */
 void besselIK (int n, double x, Bes& I, Bes& K)
 {
-    const double in = std::cyl_bessel_i ((double) n, x), in1 = std::cyl_bessel_i ((double) n + 1, x);
+    const double in = bessel::I (n, x), in1 = bessel::I (n + 1, x);
     I = { in, n / x * in + in1 };
-    double kn = std::cyl_bessel_k ((double) n, x), kn1 = std::cyl_bessel_k ((double) n + 1, x);
+    double kn = bessel::K (n, x), kn1 = bessel::K (n + 1, x);
     if (! finite (kn) || ! finite (kn1)) { kn = 1e300; kn1 = 1e300; }
     K = { kn, n / x * kn - kn1 };
 }

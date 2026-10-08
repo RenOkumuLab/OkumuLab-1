@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 
+#include "Bessel.h"
 #include "FpEnv.h"
 
 
@@ -2145,10 +2146,10 @@ int main (int argc, char** argv)
             sink = acc;
             std::printf ("  %-26s %8.2f us\n", nm, std::chrono::duration<double, std::micro> (std::chrono::steady_clock::now() - t0).count() / N);
         };
-        tm ("cyl_bessel_j(5, x)", 20000, [] (int i) { return std::cyl_bessel_j (5.0, 0.5 + 1e-4 * i); });
-        tm ("cyl_neumann(5, x)", 20000, [] (int i) { return std::cyl_neumann (5.0, 0.5 + 1e-4 * i); });
-        tm ("cyl_bessel_k(5, x)", 20000, [] (int i) { return std::cyl_bessel_k (5.0, 0.5 + 1e-4 * i); });
-        tm ("cyl_bessel_i(5, x)", 20000, [] (int i) { return std::cyl_bessel_i (5.0, 0.5 + 1e-4 * i); });
+        tm ("bessel J(5, x)", 20000, [] (int i) { return okl::bessel::J (5, 0.5 + 1e-4 * i); });
+        tm ("bessel Y(5, x)", 20000, [] (int i) { return okl::bessel::Y (5, 0.5 + 1e-4 * i); });
+        tm ("bessel K(5, x)", 20000, [] (int i) { return okl::bessel::K (5, 0.5 + 1e-4 * i); });
+        tm ("bessel I(5, x)", 20000, [] (int i) { return okl::bessel::I (5, 0.5 + 1e-4 * i); });
         tm ("shell eigen (Flügge 3x3)", 20000, [] (int i) { return okl::malletTestShellDelta (0.05 + 1e-6 * i, 3, 0.36, 6e-5, 0); });
         Globals G;
         G.excite = 1;

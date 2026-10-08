@@ -27,6 +27,7 @@ add_library(labium_dsp STATIC
     src/dsp/Params.cpp
     src/dsp/MidiRouter.cpp
     src/dsp/Mallet.cpp
+    src/dsp/Bessel.cpp
     src/dsp/Reverb.cpp
     src/dsp/Presets.cpp
     src/dsp/Simd.cpp

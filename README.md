@@ -7,6 +7,7 @@ It is a physical model of an organ flue pipe (Prinzipal 8'), made as a VST3 inst
 
 - Version 1.0.0, vendor name OkumuLab
 - Formats: VST3 and standalone (Windows x64)
+<img width="1266" height="792" alt="スクリーンショット 2026-10-08 154201" src="https://github.com/user-attachments/assets/d39dea1d-3336-4553-88fe-ee4d444414aa" />
 
 ## Features
 

@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
-# OkumuLab 1 CI: a short report of the logs on the run's summary page (readable without signing in to GitHub)
+# OkumuLab 1 CI: a short report of the logs on the run's summary page, and the first errors of each log as
+# annotations (shown on the run's page even without signing in to GitHub)
 #   ci_summary.sh <title> <log files...>
 # Each log: its last line. A log with failures or errors: those lines and the log's end, folded.
 title="$1"; shift
+for f in "$@"; do
+    [ -f "$f" ] || continue
+    grep -E "error:|error [A-Z]+[0-9]+|FAILED:|CMake Error|fatal|Undefined symbols|ld: |clang: |unknown target" "$f" | head -8 |
+        while IFS= read -r l; do
+            l=$(printf '%s' "$l" | cut -c1-900 | sed -e 's/%/%25/g' -e 's/\r//g')
+            echo "::error title=$title $f::$l"
+        done
+done
 out="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 pattern='FAIL|[Ee]rror|cannot|not found|Segmentation|Abort|Assertion|exception'
 {

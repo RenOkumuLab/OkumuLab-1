@@ -332,6 +332,7 @@ void WebEditor::sendFrame()
         f->setProperty ("d", tl.d); f->setProperty ("H", tl.H); f->setProperty ("h", tl.h); f->setProperty ("toe", tl.toe);
         f->setProperty ("rho", tl.rho); f->setProperty ("c", tl.c); f->setProperty ("kappa", tl.kappa); f->setProperty ("y0", tl.y0);
         f->setProperty ("morph", tl.morph); f->setProperty ("ftarget", tl.fTarget); f->setProperty ("ampcap", tl.ampcap);
+        f->setProperty ("bjet", tl.bJet);
         f->setProperty ("pchest", tl.pchest);
         // P3 pitch-lock servo
         f->setProperty ("servo", tl.servoCents); f->setProperty ("locked", tl.locked);

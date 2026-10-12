@@ -14,6 +14,12 @@
  * Mallet mode ("MALLET:"): the pipe struck instead of blown (Mallet.h); its air
  * column is the same waveguide, driven by the wall's breathing under the stroke.
  *
+ * v1.1 ("V11:"): the excitation and the bore's losses of an organ pipe rather than a recorder:
+ * the jet spreads on its way across the mouth (plane turbulent jet, Thwaites & Fletcher 1983),
+ * its waves grow at a rate set by its local width, and the labium splits the local profile;
+ * the two open ends radiate in their own filter stage (Norris & Sheng 1989), so the bore's
+ * upper resonances lose what a wide pipe loses.
+ *
  * No JUCE in here: the same code is linked into the plugin and into the
  * offline checks (tests/labium_check.cpp).
  */
@@ -69,9 +75,8 @@ struct PipeDesign
     double c = 0, rho = 0, gamma = 0, mu = 0;
 };
 
-/* the canonical pipe of a key: Normalmensur -2 HT, mouth 1/4, air 20 °C (labium.py); cut up for the Ising number at
-   the windchest pressure it is voiced for (v1.0: the reference, 500 Pa; Phase 1: 75 mmWS) */
-PipeDesign designPrinzipal (int midi, double voicingPa = 500.0);
+/* the canonical pipe of a key: Normalmensur -2 HT, mouth 1/4, 75 mmWS, air 20 °C (labium.py) */
+PipeDesign designPrinzipal (int midi);
 
 /* pitch-lock calibration factor of a key (Phase 1 calibrate.py), interpolated / clamped */
 double kcalFor (double midi);
@@ -93,7 +98,7 @@ struct Globals
     double scaleHT = -2.0;     // scale (Normalmensur half-tones)
     double morph = 0.0;        // 0 open .. 1 stopped
     double glide = 0.0;        // length glide [semitones]
-    double pitchLock = 1.0;
+    double pitchLock = 0.0;    // v1.1: off (the pipe sounds as built); 1 = held on the key by the servo
     double vFollow = 1.0;      // voicing follow (cut-up tracks the resonance)
     double gas = 0.0;          // -1 CO2 .. 0 air .. +1 He
     double tempC = 20.0;
@@ -143,10 +148,13 @@ void voiceParams (int midi, const Globals& G, const VoiceOverride& vo, const Pip
 struct Derived
 {
     double dline = 3, lb0 = 1, lb1 = 0, la1 = 0, lpDelay = 0, taum = 0, aMorph = 0, M = 0, Leff = 0, fres = 0, W = 0;
+    double rb0 = 1, rb1 = 0, rb2 = 0, ra1 = 0, ra2 = 0;      // V11: radiation stage of the two open ends (biquad)
     double holeR = 1, holeX = 0;         // P5: first resonance with the open side hole / without; its place on the bore (m)
     double morphFor = -1, fsFor = 0;     // aMorph cache key
 };
-void derive (const double* p, double fs, Derived& dv);
+/* phase1: the Phase 1 losses (both ends' radiation in the wall's shelf, exp(-0.5 (ka)^2)); the checks compare that
+   with the Phase 1 C core */
+void derive (const double* p, double fs, Derived& dv, bool phase1 = false);
 
 /* ----------------------------------------------------------- delay line */
 class DelayLine
@@ -257,13 +265,9 @@ public:
 
     /* P5: turbulent jitter of the jet's convection time (std / mean delay; 0 = the sharp delay of Phase 1) */
     double jetJitter = 0.0;
-    /* v1.0: the jet as an organ pipe's mouth makes it (all 0 = Phase 1's jet, as for a recorder's short mouth).
-       jetSpread: rate at which the jet's half-width grows across the cut-up when the jet is turbulent, b = b0 + s x (it is
-       scaled down to 0 for a laminar jet, Reynolds number 500); jetSat: its swing at the lip saturates at that many
-       half-widths there; jetLipVoice: the voiced upper lip sits that share of the jet's spread off its axis (at the
-       reference jet velocity jetUjRef [m/s], the pipe as voiced); topSinElev: sine of the listener's elevation, so the open
-       top's sound arrives later by the pipe's length x that (0 = no path difference) */
-    double jetSpread = 0.0, jetSat = 0.0, jetLipVoice = 0.0, jetUjRef = 0.0, topSinElev = 0.0;
+    /* V11: the Phase 1 jet (no spreading, growth exp(min(0.4 W / h, cap))) and losses; only the checks set it, to compare
+       the port with the Phase 1 C core */
+    bool phase1 = false;
     /* P5: cross drive: the other voices' mouth velocity for this block (internal rate, set by the engine; null = none),
        and where this voice leaves its own mouth velocity */
     const double* crossIn = nullptr;
@@ -292,10 +296,8 @@ public:
     double pg = 0, pf = 0, Uj = 0, vm = 0, etaN = 0, inflow = 0.5, peak = 0;
     int resets = 0;
     const ParamVec& frame() const { return A; }
-    double jetSwing() const { return std::sqrt (2.0 * etaVar); }      // v1.0: the jet's swing amplitude at the lip [m]
-    double jetHalfWidth() const { return b; }                         // and its half-width there [m]
-    double jetOffset() const { return y0c; }                          // the lip's offset from the jet's axis [m]
     const Derived& derived() const { return *dv0; }
+    double jetB = 0, jetG = 0, jetY0 = 0;     // V11: the jet at the labium this frame: half-width, growth exponent, offset [m]
     double measuredHz = 0;      // P3: last servo pitch measurement (0 = none)
     double measuredRatio = 0;   // harmonic candidate it was locked to (k / 2 of the nominal resonance)
     double measuredCents = 0;   // sounding pitch - (candidate x key target) [cents]
@@ -323,6 +325,7 @@ private:
     double qin_prev = 0, dq_lp = 0, lsh_x1 = 0, lsh_y1 = 0, dc_x1 = 0, dc_y1 = 0;
     double apm_x1 = 0, apm_y1 = 0, mq_prev = 0, mu_prev = 0, vj = 0, vj2 = 0;
     double jl1 = 0, jl2 = 0;            // P5: the low-pass ahead of the jitter taps (no grating lobes)
+    double rx1 = 0, rx2 = 0, ry1 = 0, ry2 = 0;     // V11: radiation stage state
     double jitA = 1.0, jitGd = 0.0;     // its coefficient and group delay (frame constants: a control frame can span two renders)
     int gate_on = 0;
     double onset_t = 0, kick_t = -1, um_prev = 0, ut_prev = 0, nz = 0, phi = 0;
@@ -333,6 +336,7 @@ private:
     double c = 343, rho = 1.2, zc = 412, Spipe = 0, SpSm = 0, Sflue = 0, Stoe = 0, kf = 0, k2r = 0, kp = 0, target = 0;
     double fmd = 0, dphi = 0, kj = 0, hG = 0, b = 1e-4, invb = 1e4, bH = 0, noiseA = 0, y0c = 0, H = 0, pjK = 0, pvK = 0;
     double kick = 0, kickArm = 0, kickStep = 0, edgeK = 0, radK = 0, Km = 1, lb0 = 1, lb1 = 0, la1 = 0, am = 0;
+    double rb0 = 1, rb1 = 0, rb2 = 0, ra1 = 0, ra2 = 0;
     double dline = 3, dlineStep = 0, tauStep = 0;
     double invKm1 = 1, invZc = 1, kfStep = 0;
     int footSteps = 4;
@@ -366,11 +370,6 @@ private:
     int holePrevDh = -1, holePrevDt = -1;     // the junction's place last sample (a step there passes unscattered)
     double holeA = 0, holeB = 0, holeI2Y0 = 0, holeGLow = 1.0;     // the junction's frame constants
     int holeDh = 2;
-
-    // v1.0: the jet's swing at the lip (running mean and variance of the deflection), and the open top's sound on its
-    // way to the listener (delay line, read the pipe's length x topSinElev later)
-    double etaMean = 0, etaVar = 0, kEtaTrack = 0, topD = 0, topDStep = 0, jetSatF = 1.0;
-    DelayLine topl;
 
     // period capture
     int capState = 0, capK = 0;

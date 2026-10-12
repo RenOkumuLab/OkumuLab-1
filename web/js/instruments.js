@@ -77,16 +77,16 @@ OKL.inst = (function () {
     cx.fillStyle = C.cyan; cx.beginPath(); cx.arc(X(y0), Y(W), 2.2, 0, Math.PI * 2); cx.fill();
     text(cx, 'upper lip', X(y0) - tw - 5, 30, '400 9.5px ' + SANS, C.fg2, 'right');
 
-    // jet: centreline eta(y) with half-width b
+    // jet: centreline eta(y) with its half-width (v1.1: it spreads on its way to the labium)
     const on = vm.jetOn;
     const col = OKL.gasColor(s.G.gas, s.G.tempC);
     const rgb = (a) => 'rgba(' + Math.round(col[0] * 255) + ',' + Math.round(col[1] * 255) + ',' + Math.round(col[2] * 255) + ',' + a + ')';
     if (on > 0.01) {
       const N = 40, pts = [];
-      for (let i = 0; i <= N; i++) { const yn = i / N; pts.push([vm.etaAt(yn), yn * W]); }
+      for (let i = 0; i <= N; i++) { const yn = i / N; pts.push([vm.etaAt(yn), yn * W, vm.bAt ? vm.bAt(yn) : b]); }
       cx.beginPath();
-      pts.forEach(([e, y], i) => { const x = X(e - b), yy = Y(y); if (i) cx.lineTo(x, yy); else cx.moveTo(x, yy); });
-      for (let i = pts.length - 1; i >= 0; i--) cx.lineTo(X(pts[i][0] + b), Y(pts[i][1]));
+      pts.forEach(([e, y, bb], i) => { const x = X(e - bb), yy = Y(y); if (i) cx.lineTo(x, yy); else cx.moveTo(x, yy); });
+      for (let i = pts.length - 1; i >= 0; i--) cx.lineTo(X(pts[i][0] + pts[i][2]), Y(pts[i][1]));
       cx.closePath();
       cx.fillStyle = rgb(0.35 * on); cx.fill();
       cx.beginPath();

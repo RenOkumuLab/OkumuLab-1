@@ -74,6 +74,7 @@ struct Telemetry
     Vox vox[32] {};
     int focusId = -1;
     float pg = 0, vm = 0, M = 0, dline = 0, kappa = 0, y0 = 0, ampcap = 0;
+    float bJet = 0;     // V11: the jet's half-width at the labium (y0: its offset there; ampcap: its growth exponent)
     // MALLET: the struck pipe in focus
     int excite = 0;
     MalletTelemetry mallet;
@@ -90,17 +91,6 @@ public:
     static constexpr double kGain = 0.9;            // full scale per Pa at 1 m (labium.py)
     static constexpr double kJetJitter = 0.35;      // P5: turbulent spread of the jet's convection time (std / delay)
     double jetJitter = kJetJitter;                  // (set before prepare; the checks set 0 for the sharp jet of Phase 1)
-    /* v1.0: the pipe as its dimensions make it (Voice::jetSpread / jetSat / jetLipVoice / topSinElev; set before prepare).
-       The checks set jetSpread = jetSat = jetLipVoice = 0, topPath = false and voicingPa = 75 mmWS for Phase 1's pipe. */
-    static constexpr double kJetSpread = 0.04;      // the turbulent jet's half-width grows by 0.04 x across the cut-up
-    static constexpr double kJetSat = 2.5;          // its swing at the lip saturates at about its own width (2.5 half-widths)
-    static constexpr double kJetLipVoice = 0.5;     // the voiced lip sits half the jet's spread off its axis (with the default
-                                                    // labium offset 0.5 b0: half the jet's half-width at the lip)
-    static constexpr double kVoicingPa = 500.0;     // the windchest pressure the pipes are voiced for (the reference, 1.00)
-    double jetSpread = kJetSpread, jetSat = kJetSat, jetLipVoice = kJetLipVoice, voicingPa = kVoicingPa;
-    bool topPath = true;                            // the top's sound arrives over its own path (the room's listener)
-    /* a voice's jet and mix as this engine runs them (prepare does this for its own voices; the checks for theirs) */
-    void setupVoice (Voice& v) const;
 
     Engine();
     void prepare (double hostFs, int maxBlock);

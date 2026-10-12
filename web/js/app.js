@@ -276,8 +276,18 @@ window.OKL = window.OKL || {};
     $('strobeVal').textContent = vm.strobe.toFixed(1) + 's';
     const sc = app.replay;
     const W = g.W, h = g.h;
-    vm.b = 0.4 * h;
-    vm.A = Math.min(0.4 * W / h, g.ampcap || 4);
+    // v1.1: the jet's half-width and the growth of its waves along the mouth (as the plugin computes them; the Phase 1
+    // recordings of the replay keep the Phase 1 jet: the flue's width, exp(min(0.4 W / h, 4)))
+    const live = !sc, bE = 0.4 * h, xs = 3 * h + 7.67 * bE;
+    vm.b = live && g.bjet > 0 ? g.bjet : bE;
+    vm.A = live && typeof g.ampcap === 'number' ? g.ampcap : Math.min(0.4 * W / h, 4);
+    const bScale = live ? vm.b / Math.max(bE, (W - 3 * h) / 7.67) : 1;          // (nicks: the whole jet thicker)
+    vm.bAt = (yn) => (live ? Math.max(bE, (yn * W - 3 * h) / 7.67) * bScale : vm.b);
+    vm.Gat = (yn) => {
+      if (!live) return vm.A * yn;
+      const x = yn * W;
+      return x <= xs ? 0.16 * x / bE : 0.16 * (xs / bE + 7.67 * Math.log((x - 3 * h) / 7.67 / bE));
+    };
     if (sc && sc.kind === 'attack') return buildAttackVM(dt, g);
     vm.source = sc && sc.kind === 'state' ? 'snapshot' : 'live';
     const P = per.cur;
@@ -326,7 +336,7 @@ window.OKL = window.OKL || {};
     const etaArr = P ? P.eta : null;
     vm.etaAt = (yn) => {
       if (!etaArr) return 0;
-      const gg = (Math.exp(vm.A * yn) - 1) / eA;
+      const gg = (Math.exp(vm.Gat(yn)) - 1) / eA;
       const er = lerp1(etaArr, vm.phase + vm.tauP * (1 - yn));
       return gg * (er * b + y0) * on;
     };
@@ -366,13 +376,13 @@ window.OKL = window.OKL || {};
     vm.f = 261.6; vm.phase = 0; vm.tauP = 0; vm.uc = 0;
     vm.etaK = null;
     const eA = Math.exp(vm.A) - 1, b = vm.b, y0 = g.y0, er = vm.etaRel;
-    vm.etaAt = (yn) => ((Math.exp(vm.A * yn) - 1) / eA) * (er * b + y0);
+    vm.etaAt = (yn) => ((Math.exp(vm.Gat(yn)) - 1) / eA) * (er * b + y0);
     vmHasP = true;
   }
 
   /* ------------------------------------------------------------------ display geometry (smoothed) */
   let geomD = null;
-  const GEO_KEYS = ['d', 'H', 'W', 'h', 'toe', 'footLen', 'L', 'Lphys', 'Leff', 'M', 'fres', 'morph', 'y0', 'c', 'rho', 'pchest', 'kappa', 'ampcap', 'ftarget', 'f0', 'Wdesign', 'pfDesign', 'ising'];
+  const GEO_KEYS = ['d', 'H', 'W', 'h', 'toe', 'footLen', 'L', 'Lphys', 'Leff', 'M', 'fres', 'morph', 'y0', 'c', 'rho', 'pchest', 'kappa', 'ampcap', 'bjet', 'ftarget', 'f0', 'Wdesign', 'pfDesign', 'ising'];
   function smoothGeom(target, dt) {
     if (!geomD || geomD.midi !== target.midi && !geomD.morphing) geomD = geomD || Object.assign({}, target);
     const k = 1 - Math.exp(-dt * 7);

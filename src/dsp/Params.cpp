@@ -51,7 +51,7 @@ const ParamDef kParamDefs[] = {
     { "toe",       "Toe hole",      "TOE",     Group::Voice, 0, 0.4, 1.8, 1, true, false, Fmt::Mult, 2, "", -1, F (toe) },
     // ---- 04 GEOMETRY
     { "glide",     "Length glide",  "GLIDE",   Group::Shape, 0, -12, 12, 0, false, true, Fmt::Signed, 2, "st", kPitchBend, F (glide) },
-    { "pitchLock", "Pitch lock",    "LOCK",    Group::Shape, 0, 0, 1, 1, false, false, Fmt::Lock, 0, "%", 85, F (pitchLock) },
+    { "pitchLock", "Pitch lock",    "LOCK",    Group::Shape, 0, 0, 1, 0, false, false, Fmt::Lock, 0, "%", 85, F (pitchLock) },
     // ---- 05 ATMOSPHERE
     { "cMult",     "Sound speed",   "c ONLY",  Group::Atmos, 0, 0.5, 2, 1, true, true, Fmt::Mult, 2, "", -1, F (cMult) },
     { "rhoMult",   "Density",       "rho ONLY",Group::Atmos, 0, 0.2, 5, 1, true, true, Fmt::Mult, 2, "", -1, F (rhoMult) },

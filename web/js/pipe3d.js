@@ -757,7 +757,7 @@ OKL.pipe3d = (function () {
       if (P.br[i] === 0) {
         y += vJet * dt * (0.85 + 0.3 * P.seed[i]);
         const yn = Math.min(1, y / W);
-        z = zc + g.y0 - vm.etaAt(yn) + j;
+        z = zc + g.y0 - vm.etaAt(yn) + j * (vm.bAt ? vm.bAt(yn) / b : 1);     // (v1.1: the jet widens towards the labium)
         if (y >= W) {
           const rel = (vm.etaAt(1) - g.y0 - j) / b;
           const pin = 0.5 * (1 + Math.tanh(rel));

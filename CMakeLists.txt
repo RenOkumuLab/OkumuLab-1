@@ -8,7 +8,7 @@ set(CMAKE_NINJA_CMCLDEPS_RC OFF)
 # binary for Apple silicon and Intel Macs, configure with -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" (build.sh does)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS version")
 
-project(OkumuLab1 VERSION 1.0.0 LANGUAGES C CXX)
+project(OkumuLab1 VERSION 1.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -110,7 +110,7 @@ juce_add_plugin(OkumuLab1
     COMPANY_WEBSITE ""
     PRODUCT_NAME "OkumuLab 1"
     DESCRIPTION "Labium - Prinzipal 8' flue pipe physical model"
-    VERSION 1.0.0
+    VERSION 1.1.0
     PLUGIN_MANUFACTURER_CODE OkmL
     PLUGIN_CODE Lbm1
     BUNDLE_ID com.okumulab.okumulab1.labium

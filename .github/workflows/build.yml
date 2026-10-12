@@ -1,16 +1,23 @@
-# OkumuLab 1 — builds the macOS and Linux packages on GitHub-hosted machines
+# OkumuLab 1 — builds, checks and packages the macOS and Linux versions on GitHub-hosted machines
 #
-# Every push to main (or "Run workflow" on the Actions page): build, then the packages
-#   OkumuLab1-<version>-macOS.zip              VST3, Audio Unit, app (Apple silicon + Intel, ad hoc signed)
-#   OkumuLab1-<version>-linux-x86_64.tar.gz    VST3, app
-# are kept as the run's artifacts for 3 days (download them from the run's page while signed in). Nothing is put
-# on Releases. If a build fails, the run's page shows the compiler's errors (readable without signing in).
+# Every push to main or to a release/* branch, every tag v* (or "Run workflow" on the Actions page):
+#   build, check and package
+#     OkumuLab1-<version>-macOS.zip              VST3, Audio Unit, app (Apple silicon + Intel, ad hoc signed)
+#     OkumuLab1-<version>-linux-x86_64.tar.gz    VST3, app
+#   kept as the run's artifacts for 7 days (download them from the run's page while signed in).
+#   Checks: labium_check (the sound engine against the Phase 1 core, the physics and tone, the host's block sizes, MIDI,
+#   Mallet, room, Lab) on each CPU the packages run on, pluginval (strictness 10) on the VST3, auval on the Audio Unit.
+# A tag v<version> (the version in CMakeLists.txt) also makes a draft release with both packages and
+# packaging/RELEASE_NOTES.md. The Windows zip (built and checked on Windows: build.bat, the tests, then
+# packaging/make_windows_zip.ps1) is added to the draft by hand before it is published.
+# If something fails, the run's page shows the errors (readable without signing in).
 
 name: build
 
 on:
   push:
-    branches: [main]
+    branches: [main, 'release/**']
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -24,12 +31,17 @@ defaults:
   run:
     shell: bash
 
+env:
+  PLUGINVAL: v1.0.4
+  # labium_check sections run here; cpu (this machine's timing) and stress (long random runs) run on Windows only
+  CHECKS: port derive midi pitchlock wind blocks tone mallet room lab simd
+
 jobs:
   # ------------------------------------------------------------------------------------------------ macOS
   macos:
     name: macOS (universal)
     runs-on: macos-14
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       A: build/OkumuLab1_artefacts/Release
     steps:
@@ -42,7 +54,7 @@ jobs:
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" 2>&1 | tee configure.log
 
       - name: Build
-        run: cmake --build build --parallel --target OkumuLab1_All 2>&1 | tee build.log
+        run: cmake --build build --parallel --target OkumuLab1_All labium_check 2>&1 | tee build.log
 
       - name: Sign (ad hoc) and package
         run: |
@@ -59,22 +71,45 @@ jobs:
           sed "s/@VERSION@/$V/" packaging/README_macOS.txt > "$D/README.txt"
           ditto -c -k --sequesterRsrc --keepParent "$D" "$D.zip"
           ls -l "$D.zip"
+          echo "PKG=$D" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
           name: OkumuLab1-macOS
           path: OkumuLab1-*-macOS.zip
-          retention-days: 3
+          retention-days: 7
+
+      - name: Check the sound engine (labium_check, Apple silicon)
+        run: bash .github/run_checks.sh build/labium_check checks.log $CHECKS
+
+      - name: Check the sound engine (labium_check, Intel half under Rosetta)
+        run: |
+          if ! arch -x86_64 /usr/bin/true 2>/dev/null; then echo "Rosetta 2 is not installed on this machine: skipped"; exit 0; fi
+          bash .github/run_checks.sh "arch -x86_64 build/labium_check" checks_x86.log derive pitchlock blocks tone simd
+
+      - name: pluginval (VST3) and auval (Audio Unit)
+        run: |
+          curl -sSfL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL/pluginval_macOS.zip"
+          unzip -q pluginval.zip
+          pluginval.app/Contents/MacOS/pluginval --strictness-level 10 --validate-in-process --output-dir pluginval_out \
+            --validate "$PKG/OkumuLab 1.vst3" 2>&1 | tee pluginval.log
+          grep -q "SUCCESS" pluginval.log
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "$PKG/OkumuLab 1.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar 2>/dev/null || true
+          auval -a 2>&1 | grep -i "OkmL" || true
+          auval -v aumu Lbm1 OkmL 2>&1 | tee auval.log
+          grep -q "AU VALIDATION SUCCEEDED" auval.log
 
       - name: Errors
         if: failure()
-        run: bash .github/ci_summary.sh "macOS" configure.log build.log
+        run: bash .github/ci_summary.sh "macOS" configure.log build.log checks.log checks_x86.log pluginval.log auval.log
 
   # ------------------------------------------------------------------------------------------------ Linux
   linux:
     name: Linux (x86-64)
     runs-on: ubuntu-22.04          # glibc 2.35: runs on Ubuntu 22.04, Debian 12, Fedora 36 and later
-    timeout-minutes: 90
+    timeout-minutes: 150
     env:
       A: build/OkumuLab1_artefacts/Release
     steps:
@@ -86,13 +121,13 @@ jobs:
           sudo apt-get install -y --no-install-recommends ninja-build pkg-config \
             libasound2-dev libjack-jackd2-dev libfreetype-dev libfontconfig1-dev libcurl4-openssl-dev \
             libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev libxrandr-dev libxrender-dev \
-            libgtk-3-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev
+            libgtk-3-dev libwebkit2gtk-4.1-dev libglu1-mesa-dev mesa-common-dev xvfb xauth
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release 2>&1 | tee configure.log
 
       - name: Build
-        run: cmake --build build --parallel --target OkumuLab1_All 2>&1 | tee build.log
+        run: cmake --build build --parallel --target OkumuLab1_All labium_check 2>&1 | tee build.log
 
       - name: Package
         run: |
@@ -106,13 +141,57 @@ jobs:
           sed "s/@VERSION@/$V/" packaging/README_Linux.txt > "$D/README.txt"
           tar -czf "$D.tar.gz" "$D"
           ls -l "$D.tar.gz"
+          echo "PKG=$D" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v4
         with:
           name: OkumuLab1-Linux
           path: OkumuLab1-*-linux-x86_64.tar.gz
-          retention-days: 3
+          retention-days: 7
+
+      - name: Check the sound engine (labium_check)
+        run: |
+          ulimit -s unlimited 2>/dev/null || ulimit -s 65536      # the checks keep whole engines on the stack
+          bash .github/run_checks.sh build/labium_check checks.log $CHECKS
+
+      - name: pluginval (VST3, with its screen in a virtual display)
+        run: |
+          curl -sSfL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/$PLUGINVAL/pluginval_Linux.zip"
+          unzip -q pluginval.zip && chmod +x pluginval
+          xvfb-run -a -s "-screen 0 1920x1080x24" ./pluginval --strictness-level 10 --validate-in-process \
+            --output-dir pluginval_out --validate "$PKG/OkumuLab 1.vst3" 2>&1 | tee pluginval.log
+          grep -q "SUCCESS" pluginval.log
 
       - name: Errors
         if: failure()
-        run: bash .github/ci_summary.sh "Linux" configure.log build.log
+        run: bash .github/ci_summary.sh "Linux" configure.log build.log checks.log pluginval.log
+
+  # ------------------------------------------------------------------------------------------------ release
+  release:
+    name: Draft release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, linux]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: packages
+          merge-multiple: true
+
+      - name: Draft the release (the Windows zip is added by hand)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          V=$(sed -n 's/^project(OkumuLab1 VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)
+          if [ "$TAG" != "v$V" ]; then echo "::error::the tag $TAG is not v$V, the version in CMakeLists.txt"; exit 1; fi
+          ls -l packages
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" packages/* --clobber
+          else
+            gh release create "$TAG" packages/* --draft --verify-tag --title "OkumuLab 1 v$V" --notes-file packaging/RELEASE_NOTES.md
+          fi

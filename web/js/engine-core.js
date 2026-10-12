@@ -98,8 +98,7 @@ function OKL_ENGINE_FACTORY() {
     o = o || {};
     const scaleHT = o.scaleHT !== undefined ? o.scaleHT : -2.0;
     const mouthFrac = o.mouthFrac !== undefined ? o.mouthFrac : 0.25;
-    // v1.0 (plugin): voiced for the windchest's reference pressure, 500 Pa (src/dsp: designPrinzipal, Engine::kVoicingPa)
-    const pChestMMWS = o.pChestMMWS !== undefined ? o.pChestMMWS : 500.0 / MMWS;
+    const pChestMMWS = o.pChestMMWS !== undefined ? o.pChestMMWS : 75.0;
     const flue0 = o.flue !== undefined ? o.flue : 0.65e-3;
     const flueExp = 0.45, footRatio = 0.7, footLen = 0.17;
     const g = gasProps(o.gas, o.Tc);
@@ -166,7 +165,7 @@ function OKL_ENGINE_FACTORY() {
 
   /*
    * Performance parameters (what the knobs move). Every voice is the canonical
-   * Prinzipal 8' pipe of its key, built in air at 20 °C and voiced for 500 Pa (v1.0; Phase 2: 75 mmWS);
+   * Prinzipal 8' pipe of its key, built in air at 20 °C and voiced for 75 mmWS;
    * the knobs then deform that built pipe (they do not re-design it).
    */
   const DEFAULT_G = {
@@ -184,7 +183,7 @@ function OKL_ENGINE_FACTORY() {
     morph: 0.0,        // 0 open .. 1 stopped
     glide: 0.0,        // length glide [semitones]
     sideHole: 0.0,     // side hole position (screen only for now)
-    pitchLock: 1.0,
+    pitchLock: 0.0,    // v1.1: off (the pipe sounds as built)
     vFollow: 1.0,      // voicing follow (cut-up tracks the resonance)
     gas: 0.0,          // -1 CO2 .. 0 air .. +1 He
     tempC: 20.0,
@@ -1071,11 +1070,20 @@ function OKL_ENGINE_FACTORY() {
     // the acoustics (dv.Leff) but do not saw the pipe, so they do not change the drawing.
     const d = p[P_D];
     const L = Math.max(0.004, pd.c / (2 * p[P_FTARGET]) - 0.3 * d * d / pd.cutup - 0.3 * d);
+    // v1.1 (the plugin's LabiumCore.cpp): the jet spreads on its way across the mouth (plane turbulent jet from x = 3 h,
+    // b = (x - 3 h) / 7.67, never below the flue's 0.4 h; nicks thicken it nk times); at the labium it has
+    // the half-width bjet, the labium offset is y0 half-widths of the jet without nicks (y0b1 = 1 b in metres), and its
+    // waves have grown by exp(ampcap)
+    const h = p[P_FLUE], W = dv.W, bE = 0.4 * h, xs = 3 * h + 7.67 * bE;
+    let bW = bE, growth = 0.16 * W / bE;
+    if (W > xs) { bW = (W - 3 * h) / 7.67; growth = 0.16 * (xs / bE + 7.67 * Math.log(bW / bE)); }
+    const nk = 1 + 0.75 * Math.min(1, Math.max(0, (G && G.nicking) || 0));
+    const bjet = nk * bW;
     return {
       midi, name: organName(midi), f0: pd.f0, ftarget: p[P_FTARGET],
       d: p[P_D], H: p[P_MOUTHW], W: dv.W, h: p[P_FLUE], toe: p[P_TOE], footLen: pd.foot_len,
-      L, Lphys: p[P_LPHYS], Leff: dv.Leff, M: dv.M, fres: dv.fres, morph, y0: p[P_Y0],
-      c: p[P_C], rho: p[P_RHO], pchest: p[P_PCHEST], kappa: p[P_KAPPA], ampcap: p[P_AMPCAP],
+      L, Lphys: p[P_LPHYS], Leff: dv.Leff, M: dv.M, fres: dv.fres, morph, y0: p[P_Y0] * bW / bE, y0b1: bW,
+      c: p[P_C], rho: p[P_RHO], pchest: p[P_PCHEST], kappa: p[P_KAPPA], ampcap: growth, bjet,
       Wdesign: pd.cutup, ising: pd.ising, pfDesign: pd.p_foot, lDesign: pd.l_phys, dDesign: pd.d,
     };
   }

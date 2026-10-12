@@ -93,24 +93,6 @@ Engine::Engine()
     }
 }
 
-void Engine::setupVoice (Voice& v) const
-{
-    v.jetJitter = jetJitter;
-    v.jetSpread = jetSpread;
-    v.jetSat = jetSat;
-    v.jetLipVoice = jetLipVoice;
-    v.jetUjRef = designPrinzipal (60, voicingPa).Uj;       // (every key is voiced at the same foot pressure)
-    // v1.0: the listener's elevation (the room's) for the tops' path
-    double sinElev = 0.0;
-    if (topPath)
-    {
-        const RoomSpec rs = defaultRoom();
-        const double dx = rs.mic[0] - rs.src[0], dy = rs.mic[1] - rs.src[1], dz = rs.src[2] - rs.mic[2];
-        sinElev = std::max (0.0, dz / std::sqrt (dx * dx + dy * dy + dz * dz));
-    }
-    v.topSinElev = sinElev;
-}
-
 void Engine::prepare (double hostFs, int maxBlock)
 {
     const ScopedFpMode fp (false);
@@ -119,13 +101,11 @@ void Engine::prepare (double hostFs, int maxBlock)
     fsOut = hostFs;
     os = hostFs < 70000.0 ? 2 : 1;
     fs = os * hostFs;
-    // v1.0: the canonical pipes voiced for this pressure
-    for (int m = 0; m < 128; ++m) designs[(size_t) m] = designPrinzipal (m, voicingPa);
     for (int i = 0; i < kMaxVoices; ++i)
     {
         voices[(size_t) i].prepare (fs, (uint32_t) (17 + i * 7919));
         voices[(size_t) i].setHostRate (fsOut);
-        setupVoice (voices[(size_t) i]);
+        voices[(size_t) i].jetJitter = jetJitter;
         voices[(size_t) i].active = false;
         voices[(size_t) i].id = -1;
     }
@@ -635,8 +615,20 @@ void Engine::fillTelemetry (Telemetry& t)
     t.M = (float) dv.M;
     t.dline = (float) dv.dline;
     t.kappa = (float) p[P_KAPPA];
-    t.y0 = (float) p[P_Y0];
-    t.ampcap = (float) p[P_AMPCAP];
+    // V11: the jet where it meets the labium as the voice computed it (half-width, offset, growth exponent; ampcap carries
+    // the growth exponent, which Phase 1 capped); before the voice's first frame, the flue's values
+    if (fv->jetB > 0.0)
+    {
+        t.y0 = (float) fv->jetY0;
+        t.ampcap = (float) fv->jetG;
+        t.bJet = (float) fv->jetB;
+    }
+    else
+    {
+        t.y0 = (float) p[P_Y0];
+        t.ampcap = (float) std::min (0.4 * dv.W / p[P_FLUE], p[P_AMPCAP]);
+        t.bJet = (float) (0.4 * p[P_FLUE]);
+    }
 }
 
 void Engine::copyScope (float* dst, int n) const

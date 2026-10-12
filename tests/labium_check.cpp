@@ -9,7 +9,9 @@
  *   4. stress    : random parameters (incl. extremes): finite, bounded output
  *   5. midi      : channel-10 pad split, CC map, MIDI learn, pitch bend
  *
- *   labium_check [port|derive|midi|pitchlock|wind|tone|cpu|stress|mallet|room|lab|simd|all]
+ *  10. tone      : the losses (radiation stage vs the physics) and the Prinzipal's partials across the compass
+ *
+ *   labium_check [port|derive|midi|pitchlock|wind|blocks|tone|cpu|stress|mallet|room|lab|simd|all]
  */
 #include "Engine.h"
 #include "LabiumCore.h"
@@ -27,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <limits>
+#include <memory>
 #include <random>
 #include <string>
 #include <vector>
@@ -219,11 +222,12 @@ double pitchError (const double* x, size_t n, double fs, double fKey, double* ca
 /* ------------------------------------------------------------- renders */
 ParamVec basePipe (int midi)
 {
-    // Phase 1 base_params(design_prinzipal(midi), k_cal) through the plugin's own path (Phase 1's pipe: voiced for 75 mmWS)
-    const PipeDesign pd = designPrinzipal (midi, 75.0 * MMWS);
+    // Phase 1 base_params(design_prinzipal(midi), k_cal) through the plugin's own path
+    const PipeDesign pd = designPrinzipal (midi);
     ParamVec v;
     Globals G;
     G.wind = 75.0;               // Phase 1: 75 mmWS in the windchest (the plugin's reference is 500 Pa since 0.6.1)
+    G.pitchLock = 1.0;           // Phase 1 base_params: pitch lock on (the plugin's default is off since v1.1)
     voiceParams (midi, G, VoiceOverride {}, pd, v);
     // undo the knob defaults that differ from Phase 1 base_params: voicing follow 0, pallet 12 ms
     v[P_VFOLLOW] = 0.0;
@@ -231,21 +235,15 @@ ParamVec basePipe (int midi)
     return v;
 }
 
-/* the jet of a bare voice as the plugin's engine runs it (the jitter of P5, the v1.0 jet; Engine::setupVoice) */
-void engineJet (Voice& v)
-{
-    static const Engine e;
-    e.setupVoice (v);
-}
-
-/* jitter: P5 jet convection jitter (0 = Phase 1's jet, for the port checks; > 0: the plugin's engine's jet, engineJet) */
+/* jitter: P5 jet convection jitter (0 = Phase 1, for the port checks; the plugin's engine uses Engine::kJetJitter);
+   phase1: the Phase 1 jet and losses instead of v1.1's (the port checks against the Phase 1 C core) */
 std::vector<double> renderCpp (const ParamVec& p, double dur, double fs, bool servo, double gateOff = -1, int* resets = nullptr, double servoStart = 0.0,
-                               double jitter = 0.0)
+                               double jitter = 0.0, bool phase1 = false)
 {
     const int n = (int) std::lround (dur * fs);
     Voice v;
-    if (jitter > 0.0) engineJet (v);
     v.jetJitter = jitter;
+    v.phase1 = phase1;
     v.servoEnabled = servo;
     v.prepare (fs, 3);
     v.start (p, servoStart);
@@ -292,7 +290,7 @@ std::vector<double> renderC (const ParamVec& p, double dur, double gateOff = -1,
 /* ================================================================ 1. port */
 void testPort()
 {
-    std::printf ("\n== 1. port: C++ voice vs Phase 1 C core and Phase 1 reference (96 kHz, servo off) ==\n");
+    std::printf ("\n== 1. port: C++ voice vs Phase 1 C core and Phase 1 reference (96 kHz, servo off; the C++ voice with its Phase 1 jet and losses) ==\n");
     std::printf ("%-22s %10s %10s %10s %8s %8s %7s %7s %7s %6s %6s\n", "state", "ref f", "C f", "C++ f", "C++-ref", "C++-C", "ref dB", "C++ dB", "d dB", "hm2-6", "reset");
     double worstC = 0, worstRef = 0, worstDb = 0, worstHm = 0, seedVar = 0, cBase = 0;
     auto row = [&] (const char* name, int midi, const ParamVec& p, double dur, double steady, double gateOff,
@@ -301,7 +299,7 @@ void testPort()
         const double f0 = midiToHz (midi);
         int rc = 0, rcpp = 0;
         const Metrics mc = analyze (renderC (p, dur, gateOff, &rc), FS, f0, steady);
-        const Metrics mp = analyze (renderCpp (p, dur, FS, false, gateOff, &rcpp), FS, f0, steady);
+        const Metrics mp = analyze (renderCpp (p, dur, FS, false, gateOff, &rcpp, 0.0, 0.0, true), FS, f0, steady);
         const Metrics ms = analyze (renderC (p, dur, gateOff, nullptr, 7), FS, f0, steady);   // C core, other noise seed
         double hmax = 0;
         if (rhm)
@@ -380,7 +378,7 @@ void testPort()
         p[P_NOISE] = 0.0;
         const double f0 = midiToHz (s.midi), dur = s.midi < 48 ? 2.5 : 1.4, st = dur - 0.4;
         const Metrics mc = analyze (renderC (p, dur), FS, f0, st);
-        const Metrics mp = analyze (renderCpp (p, dur, FS, false), FS, f0, st);
+        const Metrics mp = analyze (renderCpp (p, dur, FS, false, -1, nullptr, 0.0, 0.0, true), FS, f0, st);
         double hmax = 0;
         for (int i = 1; i < 6; ++i) if (std::isfinite (mc.hm[i]) && mc.hm[i] > -60) hmax = std::max (hmax, std::abs (mp.hm[i] - mc.hm[i]));
         std::printf ("%-22s %10.3f %10.3f %8.2f %8.1f %8.2f %8.2f\n", s.name, mc.f, mp.f, cents (mp.f, mc.f), mc.db, mp.db - mc.db, hmax);
@@ -399,8 +397,10 @@ const Mod kMods[] = {
     { "wind 300 mmWS", [] (Globals& g) { g.wind = 300; } },
     { "cut-up x0.6", [] (Globals& g) { g.cutup = 0.6; } },
     { "cut-up x1.6", [] (Globals& g) { g.cutup = 1.6; } },
-    { "labium -1.5b", [] (Globals& g) { g.y0b = -1.5; } },
-    { "labium +1.5b", [] (Globals& g) { g.y0b = 1.5; } },
+    // (v1.1: b is the jet's half-width where it meets the labium, 1.3 to 11 times the flue's; beyond about 1.2 b the jet no
+    //  longer crosses the edge and the pipe is silent, so the states move by 1 b, as 1.5 flue half-widths did before)
+    { "labium -1.0b", [] (Globals& g) { g.y0b = -1.0; } },
+    { "labium +1.0b", [] (Globals& g) { g.y0b = 1.0; } },
     { "scale +8 HT", [] (Globals& g) { g.scaleHT = 8; } },
     { "scale -14 HT", [] (Globals& g) { g.scaleHT = -14; } },
     { "mouth 1/7", [] (Globals& g) { g.mouthFrac = 1.0 / 7.0; } },
@@ -450,6 +450,7 @@ void testPitchLock()
         {
             double r1, r2;
             Globals G;
+            G.pitchLock = 1.0;       // (off by default since v1.1)
             const double a = steadyCents (m, G, fs, false, 2.0, &r1);
             const double b = steadyCents (m, G, fs, true, 2.0, &r2);
             char nm[8];
@@ -472,7 +473,9 @@ void testPitchLock()
         double wOff = 0, wOn = 0, reg = 0;
         for (int k : keys)
         {
-            Globals G;               // (the voicing pressure: the reference, 500 Pa)
+            Globals G;
+            G.wind = 75.0;           // the voicing pressure (75 mmWS = Wind pressure 1.47): the states are the Phase 3 ones
+            G.pitchLock = 1.0;
             md.apply (G);
             double r1, r2;
             const double a = steadyCents (k, G, FS, false, 2.6, &r1);
@@ -492,9 +495,9 @@ void testPitchLock()
     std::printf ("-- sweeps over 3 s at c1 (internal 96 kHz, servo on), pitch in 60 ms windows --\n");
     struct Sweep { const char* name; void (*at) (Globals&, double); };
     const Sweep sweeps[] = {
-        { "wind x1 -> x4", [] (Globals& g, double x) { g.wind = Globals {}.wind * std::pow (4.0, x); } },
+        { "wind 75 -> 300", [] (Globals& g, double x) { g.wind = 75 * std::pow (4.0, x); } },
         { "cut-up x1 -> x1.6", [] (Globals& g, double x) { g.cutup = 1 + 0.6 * x; } },
-        { "labium 0.5 -> -1.5 b", [] (Globals& g, double x) { g.y0b = 0.5 - 2.0 * x; } },
+        { "labium 0.5 -> -1.0 b", [] (Globals& g, double x) { g.y0b = 0.5 - 1.5 * x; } },
         { "scale -2 -> +8", [] (Globals& g, double x) { g.scaleHT = -2 + 10 * x; } },
         { "helium 0 -> 60%", [] (Globals& g, double x) { g.gas = 0.6 * x; } },
         { "temp 20 -> 60 C", [] (Globals& g, double x) { g.tempC = 20 + 40 * x; } },
@@ -512,9 +515,11 @@ void testPitchLock()
             const PipeDesign pd = designPrinzipal (midi);
             Voice v;
             v.servoEnabled = servo;
-            engineJet (v);
+            v.jetJitter = Engine::kJetJitter;
             v.prepare (fs, 3);
-            Globals G;               // (the voicing pressure, as the states above)
+            Globals G;
+            G.wind = 75.0;           // (the voicing pressure, as the states above)
+            G.pitchLock = 1.0;
             ParamVec p;
             voiceParams (midi, G, VoiceOverride {}, pd, p);
             v.start (p, 1200.0 * std::log2 (kcalFor (midi)));
@@ -525,6 +530,8 @@ void testPitchLock()
                 const double t = i / fs;
                 const double x = std::clamp ((t - 0.8) / 3.0, 0.0, 1.0);
                 Globals g;
+                g.wind = 75.0;
+                g.pitchLock = 1.0;
                 sw.at (g, x);
                 voiceParams (midi, g, VoiceOverride {}, pd, p);
                 v.setTarget (p);
@@ -541,6 +548,8 @@ void testPitchLock()
                 const double t = (i + win / 2) / fs;
                 const double x = std::clamp ((t - 0.8) / 3.0, 0.0, 1.0);
                 Globals g;
+                g.wind = 75.0;
+                g.pitchLock = 1.0;
                 sw.at (g, x);
                 const double ft = midiToHz (midi) * std::pow (2.0, g.glide / 12.0);
                 double cand;
@@ -771,7 +780,7 @@ void testDerive()
         p[P_KCAL] *= std::exp2 ((U (rng) - 0.5) * 300.0 / 1200.0);     // servo corrections
         const double fs = rates[trial % 4];
         Derived dv;
-        derive (p.data(), fs, dv);
+        derive (p.data(), fs, dv, true);            // (the Phase 1 losses: v1.1 adds the radiation stage, checked in "tone")
         double ref[8];
         labium_debug_derive (p.data(), fs, ref);
         const double rg = std::max (std::abs ((ref[0] + ref[1]) / (1.0 + ref[2])), std::abs ((ref[0] - ref[1]) / (1.0 - ref[2])));
@@ -1261,7 +1270,7 @@ WindPoint windPoint (int midi, double wind, double lock)
     ParamVec p;
     voiceParams (midi, G, VoiceOverride {}, designPrinzipal (midi), p);
     Voice v;
-    engineJet (v);
+    v.jetJitter = Engine::kJetJitter;
     v.prepare (FS, 3);
     v.start (p, 1200.0 * std::log2 (kcalFor (midi)));
     const int n = (int) (2.5 * FS);
@@ -1335,7 +1344,6 @@ double engineLevelDb (double wind, int midi, double jitter)
 {
     Engine e;
     e.jetJitter = jitter;
-    if (jitter == 0.0) { e.jetSpread = e.jetSat = e.jetLipVoice = 0.0; e.topPath = false; }     // Phase 1's jet and mix
     e.prepare (48000, 480);
     Globals g;
     g.reverb = 0; g.wind = wind;
@@ -1738,104 +1746,138 @@ void testSimd()
     }
 }
 
-/* ============================================================== 2d. tone (v1.0) */
-/* The Principal's tone as heard (the engine at 48 kHz, velocity 100, dry, each channel, steady part 1.5 .. 2.9 s), against
-   what measured principals show (Pykett): the octave present (2nd partial at most 26 dB under the fundamental), the partials
-   above the 5th falling away (6th .. 12th together at most -24 dB: no flat plateau, the buzz of a jet that switches like a
-   valve), the breath well under the tone (partials 32 dB over the noise between them), steady (level sd < 0.1 dB).
-   The v0.6.3 pipe (Phase 1's jet, the two ends mixed without their path difference, voiced for 75 mmWS) must fail it. */
-struct ToneCheck { double h2 = 0, up = 0, hnr = 0, sd = 0; };
-ToneCheck toneCheckOf (const std::vector<float>& x, double fs, double f0)
-{
-    ToneCheck t;
-    const size_t i0 = (size_t) (1.5 * fs), i1 = (size_t) (2.9 * fs), n = i1 - i0, N = nextPow2 (n);
-    std::vector<std::complex<double>> a (N);
-    for (size_t i = 0; i < n; ++i)
-    {
-        const double u = 2 * kPi * (double) i / (double) (n - 1);
-        a[i] = x[i0 + i] * (0.35875 - 0.48829 * std::cos (u) + 0.14128 * std::cos (2 * u) - 0.01168 * std::cos (3 * u));
-    }
-    fft (a);
-    const double df = fs / (double) N, w = std::max (5.0 * df, std::min (0.1 * f0, 40.0));
-    double hp[13] {}, pH = 0, pN = 0;
-    for (size_t k = 1; k < N / 2; ++k)
-    {
-        const double fk = (double) k * df;
-        if (fk < 40.0 || fk > 16000.0) continue;
-        const int kh = (int) std::lround (fk / f0);
-        const double e = std::norm (a[k]);
-        if (kh >= 1 && std::abs (fk - kh * f0) <= w) { pH += e; if (kh <= 12) hp[kh] += e; }
-        else pN += e;
-    }
-    t.h2 = 10 * std::log10 (hp[2] / hp[1] + 1e-30);
-    double up = 0;
-    for (int k = 6; k <= 12; ++k) up += hp[k];
-    t.up = 10 * std::log10 (up / hp[1] + 1e-30);
-    t.hnr = 10 * std::log10 (pH / (pN + 1e-300));
-    // level steadiness over frames of whole periods (>= 40 ms)
-    const size_t per = (size_t) std::lround (fs / f0), fl = per * (size_t) std::ceil (0.04 * f0);
-    std::vector<double> lv;
-    for (size_t s = i0; s + fl <= i1; s += fl)
-    {
-        double q = 0;
-        for (size_t i = s; i < s + fl; ++i) q += (double) x[i] * x[i];
-        lv.push_back (10 * std::log10 (q / (double) fl + 1e-30));
-    }
-    double mu = 0, var = 0;
-    for (double v : lv) mu += v;
-    mu /= (double) lv.size();
-    for (double v : lv) var += (v - mu) * (v - mu);
-    t.sd = std::sqrt (var / (double) lv.size());
-    return t;
-}
-
-void toneNote (int midi, bool v063, std::vector<float>& L, std::vector<float>& R)
-{
-    Engine e;
-    if (v063) { e.jetSpread = e.jetSat = e.jetLipVoice = 0.0; e.topPath = false; e.voicingPa = 75.0 * MMWS; }
-    e.prepare (48000, 480);
-    Globals g;
-    g.reverb = 0;
-    e.setGlobals (g);
-    std::vector<float> l (480), r (480);
-    L.clear(); R.clear();
-    e.noteOn (midi, midi, 100);
-    for (int b = 0; b < 300; ++b)
-    {
-        e.process (l.data(), r.data(), 480);
-        L.insert (L.end(), l.begin(), l.end());
-        R.insert (R.end(), r.begin(), r.end());
-    }
-}
-
+/* v1.1: the excitation and losses of an organ pipe (the spreading jet, the radiation stage) */
 void testTone()
 {
-    std::printf ("\n== 2d. tone: the default sound is a Principal's (every 3rd key, both channels, dry) ==\n");
-    std::printf ("  key  ch |   2nd  6..12   HNR  lvl sd |  v0.6.3:  2nd  6..12   HNR\n");
-    int bad = 0, badOld = 0, keysOld = 0;
-    for (int midi = 36; midi <= 96; midi += 3)
+    std::printf ("\n== 10. tone: the bore's losses and the Prinzipal's partials ==\n");
+    // (a) the wall shelf x the radiation stage against the physical round trip (wall x Norris & Sheng |R| of both ends),
+    //     random knob settings: stable, passive, and close to the physics at the harmonics
     {
-        std::vector<float> L, R, oL, oR;
-        toneNote (midi, false, L, R);
-        toneNote (midi, true, oL, oR);
-        bool oldFails = false;
-        for (int ch = 0; ch < 2; ++ch)
+        std::mt19937 rng (11);
+        std::uniform_real_distribution<double> U (0.0, 1.0);
+        auto rNS = [] (double ka) { return ka > 3.5 ? 0.0987 * (3.5 / ka) * (3.5 / ka) : (1 + 0.2 * ka - 0.084 * ka * ka) / (1 + 0.2 * ka + 0.416 * ka * ka); };
+        double worst = 0, worstDefault = 0, worstGain = 0;
+        int unstable = 0, n = 0;
+        char worstAt[160] = "", worstDefAt[160] = "";
+        for (int trial = 0; trial < 4000; ++trial)
         {
-            const double f0 = midiToHz (midi);
-            const ToneCheck t = toneCheckOf (ch ? R : L, 48000, f0), o = toneCheckOf (ch ? oR : oL, 48000, f0);
-            auto ok = [] (const ToneCheck& c) { return c.h2 >= -26.0 && c.up <= -24.0 && c.hnr >= 32.0 && c.sd < 0.1; };
-            if (! ok (t)) ++bad;
-            if (! ok (o)) { ++badOld; oldFails = true; }
-            char nm[8];
-            organName (midi, nm);
-            std::printf ("  %-4s %s | %5.1f %6.1f %5.1f  %5.3f%s | %12.1f %6.1f %5.1f%s\n", nm, ch ? "R" : "L", t.h2, t.up, t.hnr, t.sd, ok (t) ? "  " : " !",
-                         o.h2, o.up, o.hnr, ok (o) ? "" : "  (fails)");
+            Globals g;
+            const bool dflt = trial < 400;               // the first sets: default knobs, every key
+            if (! dflt)
+                for (int i = 0; i < kNumParams; ++i)
+                {
+                    const ParamDef& d = kParamDefs[i];
+                    double x = U (rng);
+                    if (U (rng) < 0.4) x = toNorm (d, d.def);
+                    g.*(d.field) = fromNorm (d, x);
+                }
+            const int midi = dflt ? 24 + trial % 85 : 24 + (int) (U (rng) * 85);
+            const double fs = trial % 2 ? 96000.0 : 88200.0;
+            ParamVec p;
+            voiceParams (midi, g, VoiceOverride {}, designPrinzipal (midi), p);
+            Derived dv;
+            derive (p.data(), fs, dv);
+            {
+                // pole radius of 1 + ra1 z^-1 + ra2 z^-2
+                const double disc = dv.ra1 * dv.ra1 - 4.0 * dv.ra2;
+                const double rmax = disc >= 0 ? std::max (std::abs (-dv.ra1 + std::sqrt (disc)), std::abs (-dv.ra1 - std::sqrt (disc))) / 2.0
+                                              : std::sqrt (dv.ra2);
+                if (! (rmax < 1.0 - 1e-9) || ! (std::abs (dv.la1) < 1.0)) ++unstable;
+            }
+            const double c = p[P_C], a = 0.5 * p[P_D], am = std::sqrt (p[P_MOUTHW] * dv.W / kPi), morph = std::clamp (p[P_MORPH], 0.0, 1.0);
+            const double f1 = c / (2.0 * dv.Leff), nu = p[P_MU] / p[P_RHO];
+            auto H = [&] (double f) {
+                const std::complex<double> z1 = std::polar (1.0, -kTwoPi * f / fs), z2 = z1 * z1;
+                return std::abs ((dv.lb0 + dv.lb1 * z1) / (1.0 + dv.la1 * z1) * (dv.rb0 + dv.rb1 * z1 + dv.rb2 * z2) / (1.0 + dv.ra1 * z1 + dv.ra2 * z2));
+            };
+            for (int i = 0; i <= 64; ++i) worstGain = std::max (worstGain, H (0.5 * fs * i / 64.0));
+            for (int k = 1; k <= 16 && k * f1 < std::min (0.4 * fs, 20000.0); ++k)     // (the audible band: the bilinear stage warps near Nyquist)
+            {
+                const double f = k * f1, w = kTwoPi * f, kk = w / c;
+                const double alpha = std::sqrt (w * nu / 2.0) / (a * c) * (1.0 + (p[P_GAMMA] - 1.0) / std::sqrt (0.71));
+                const double G = std::exp (-2.0 * alpha * dv.Leff * p[P_LOSS]) * std::pow (rNS (kk * a), 1.0 - morph) * rNS (kk * am);
+                const double e = std::abs (H (f) - G);
+                char at[160];
+                std::snprintf (at, sizeof at, "MIDI %d H%d (%.0f Hz, ka %.2f, k am %.2f, morph %.2f, loss %.1f): %.3f vs %.3f",
+                               midi, k, f, kk * a, kk * am, morph, p[P_LOSS], H (f), G);
+                if (e > worst) { worst = e; std::snprintf (worstAt, sizeof worstAt, "%s", at); }
+                if (dflt && e > worstDefault) { worstDefault = e; std::snprintf (worstDefAt, sizeof worstDefAt, "%s", at); }
+            }
+            ++n;
         }
-        if (oldFails) ++keysOld;
+        std::printf ("  %d sets: round-trip gain vs physics at harmonics 1-16 below 20 kHz: worst |dG| %.3f (default knobs, keys C,, .. c5: %.3f); "
+                     "max gain %.4f; unstable %d\n    worst: %s\n    worst at default knobs: %s\n", n, worst, worstDefault, worstGain, unstable,
+                     worstAt, worstDefAt);
+        check (unstable == 0 && worstGain <= 1.0, "loss stages stable and passive");
+        check (worstDefault < 0.07, "loss stages within 0.07 of the physical round trip (default knobs)");
+        check (worst < 0.15, "loss stages within 0.15 of the physical round trip (any knobs)");
     }
-    check (bad == 0, "the default sound is a Principal's at every key: octave present, upper partials falling, breath under the tone, steady");
-    std::printf ("  the v0.6.3 pipe fails at %d of 21 keys (%d channel checks)\n", keysOld, badOld);
-    check (keysOld >= 15, "the check catches the v0.6.3 pipe (weak octave, flat upper partials, rasp)");
+    // (b) the default rank (pitch lock off, reverb off, 48 kHz): partials of each ear (the mouth is panned left, the top right),
+    //     the jet's swing at the labium in its local half-widths
+    {
+        std::printf ("  key    level |   H2    H3    H4    H5    H6    H8   H10 | H6-12 | swing p50 p95\n");
+        for (int key : { 36, 48, 60, 72, 84, 96 })
+        {
+            const double fs = 48000.0;
+            auto e = std::make_unique<Engine>();
+            e->prepare (fs, 64);
+            Globals g;
+            for (int i = 0; i < kNumParams; ++i) g.*(kParamDefs[i].field) = kParamDefs[i].def;
+            g.reverb = 0;
+            e->setGlobals (g);
+            e->noteOn (key, key, 100);
+            const int B = 7, n = (int) (2.5 * fs);
+            std::vector<float> L (B), R (B);
+            std::vector<double> yl, yr, sw;
+            for (int s = 0; s + B <= n; s += B)
+            {
+                e->process (L.data(), R.data(), B);
+                if (s >= (int) (1.5 * fs))
+                {
+                    for (int i = 0; i < B; ++i) { yl.push_back (L[(size_t) i]); yr.push_back (R[(size_t) i]); }
+                    for (int v = 0; v < Engine::kMaxVoices; ++v)
+                        if (e->voice (v).active && e->voice (v).id == key) sw.push_back (std::abs (e->voice (v).etaN));
+                }
+            }
+            const size_t N = nextPow2 (yl.size());
+            std::vector<std::complex<double>> XL (N), XR (N);
+            double en = 0;
+            for (size_t i = 0; i < yl.size(); ++i)
+            {
+                const double w = 0.5 - 0.5 * std::cos (2 * kPi * i / (yl.size() - 1));
+                XL[i] = yl[i] * w; XR[i] = yr[i] * w;
+                en += 0.5 * (yl[i] * yl[i] + yr[i] * yr[i]);
+            }
+            fft (XL); fft (XR);
+            const double df = fs / (double) N, f0 = midiToHz (key);
+            size_t k1 = 0;
+            double best = 0;
+            for (size_t k = (size_t) (0.95 * f0 / df); k <= (size_t) (1.05 * f0 / df); ++k)
+                if (std::norm (XL[k]) + std::norm (XR[k]) > best) { best = std::norm (XL[k]) + std::norm (XR[k]); k1 = k; }
+            const double f1 = (double) k1 * df;
+            double Hp[13] {};
+            for (int h = 1; h <= 12; ++h)
+            {
+                if (h * f1 > 0.45 * fs) { Hp[h] = 0; continue; }
+                const size_t kc = (size_t) std::lround (h * f1 / df);
+                for (size_t k = kc - 3; k <= kc + 3; ++k) Hp[h] += 0.5 * (std::norm (XL[k]) + std::norm (XR[k]));
+            }
+            auto dB = [&] (double x) { return x > 0 ? 10 * std::log10 (x / Hp[1]) : -99.0; };
+            double up = 0;
+            bool fundStrongest = true;
+            for (int h = 2; h <= 12; ++h) { if (h >= 6) up += Hp[h]; if (Hp[h] > Hp[1]) fundStrongest = false; }
+            std::sort (sw.begin(), sw.end());
+            const double p50 = sw.empty() ? 0 : sw[sw.size() / 2], p95 = sw.empty() ? 0 : sw[(size_t) (0.95 * (sw.size() - 1))];
+            char nm[8];
+            organName (key, nm);
+            std::printf ("  %-5s %6.1f | %5.1f %5.1f %5.1f %5.1f %5.1f %5.1f %5.1f | %5.1f | %5.1f %5.1f\n", nm, 10 * std::log10 (en / yl.size()),
+                         dB (Hp[2]), dB (Hp[3]), dB (Hp[4]), dB (Hp[5]), dB (Hp[6]), dB (Hp[8]), dB (Hp[10]), dB (up), p50, p95);
+            check (fundStrongest, "the fundamental is the strongest partial");
+            check (dB (Hp[2]) > -27.0 && dB (Hp[2]) < -5.0, "the octave (H2) between -27 and -5 dB");
+            check (dB (up) < -20.0, "partials 6-12 together below -20 dB (no string-like upper partials)");
+            check (p95 > 1.5 && p95 < 5.5, "jet swing at the labium 1.5 .. 5.5 local half-widths");
+        }
+    }
 }
 
 /* the host's block size: a control frame (CTRL internal samples) may span two renders. Until v1.0 the jet jitter's low-pass
@@ -1940,7 +1982,7 @@ int main (int argc, char** argv)
         for (int pass = 0; pass < 3; ++pass)
         {
             if (pass == 1) fpenv::set (fpenv::flushing (fpenv::get()));     // denormals flushed to zero, as the plugin's audio runs
-            if (pass == 2) engineJet (v);                         // the jet as the engine runs it (P5 jitter, v1.0)
+            if (pass == 2) v.jetJitter = Engine::kJetJitter;         // P5: the jet's turbulent jitter, as the engine runs it
             const auto t0 = std::chrono::steady_clock::now();
             for (int i = 0; i < blocks; ++i) v.render (512, L.data(), R.data(), nullptr);
             const double ns = std::chrono::duration<double, std::nano> (std::chrono::steady_clock::now() - t0).count() / (blocks * 512.0);
@@ -1991,7 +2033,7 @@ int main (int argc, char** argv)
             {
                 // what the servo sees: a voice rendered the same way, its measurements every 0.2 s
                 Voice v;
-                engineJet (v);
+                v.jetJitter = Engine::kJetJitter;
                 v.prepare (FS, 3);
                 v.start (p, 1200.0 * std::log2 (kcalFor (k)));
                 std::vector<double> L (19200), R (19200), mo (19200);
@@ -2115,7 +2157,6 @@ int main (int argc, char** argv)
                     ParamVec p;
                     voiceParams (midi, G, VoiceOverride {}, designPrinzipal (midi), p);
                     Voice v;
-                    if (jit > 0.0) engineJet (v);
                     v.jetJitter = jit;
                     v.prepare (FS, 3);
                     v.start (p, 1200.0 * std::log2 (kcalFor (midi)));
@@ -2176,8 +2217,8 @@ int main (int argc, char** argv)
     if (what == "midi" || what == "all") testMidi();
     if (what == "pitchlock" || what == "all") testPitchLock();
     if (what == "wind" || what == "all") { testWind(); testWindEngine(); }
-    if (what == "tone" || what == "all") testTone();
     if (what == "blocks" || what == "all") testBlocks();
+    if (what == "tone" || what == "all") testTone();
     if (what == "cpu" || what == "all") testCpu();
     if (what == "stress" && argc > 2) stressVariant = std::atoi (argv[2]);
     if (what == "stress" && argc > 3) stressOnly = std::atoi (argv[3]);

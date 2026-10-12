@@ -385,9 +385,13 @@ int main (int argc, char** argv)
         const double r0 = rms (w, 48000, 0.9, 1.4), r1 = rms (w, 48000, 2.2, 2.8);
         check (r1 > r0 * 1.6, "pad A1 pressure raises the wind of the held pipe: " + juce::String (20 * std::log10 (r1 / r0), 1) + " dB");
         writeWav (w, 48000, outDir.getChildFile ("03_pad_wind_mod.wav"));
-        // pad B1 (ch10 note 44): wind pipe C, pressure = wind
-        auto pb = render (*p, 48000, 256, 3.0, { { 0.05, on (10, 44, 80) }, { 0.06, juce::MidiMessage::aftertouchChange (10, 44, 40) },
-                                                 { 1.2, juce::MidiMessage::aftertouchChange (10, 44, 120) }, { 2.5, off (10, 44) } });
+        // pad B1 (ch10 note 44): wind pipe C, pressure = wind. The pipe's own sound (reverb off): with the pitch free (v1.1)
+        // the stronger wind also raises the C by ~8 cents, and at 65 Hz the room's modes (T60 5.7 s, ~0.4 Hz wide) alone
+        // change the reverberant level by a few dB
+        auto pd = make (48000, 256);
+        if (auto* rv = findParam (*pd, "Reverb")) rv->setValueNotifyingHost (0.0f);
+        auto pb = render (*pd, 48000, 256, 3.0, { { 0.05, on (10, 44, 80) }, { 0.06, juce::MidiMessage::aftertouchChange (10, 44, 40) },
+                                                  { 1.2, juce::MidiMessage::aftertouchChange (10, 44, 120) }, { 2.5, off (10, 44) } });
         const double b0 = rms (pb, 48000, 0.6, 1.1), b1 = rms (pb, 48000, 1.8, 2.4);
         check (b0 > 1e-3 && b1 > b0, "pad B1 plays the wind pipe C, more pressure is louder (" + juce::String (20 * std::log10 (b1 / b0), 1) + " dB)");
         writeWav (pb, 48000, outDir.getChildFile ("04_pad_wind_pipe.wav"));
@@ -459,6 +463,7 @@ int main (int argc, char** argv)
     {
         auto p = make (sr, 512);
         if (auto* rv = findParam (*p, "Reverb")) rv->setValueNotifyingHost (0.0f);
+        if (auto* lk = findParam (*p, "Pitch lock")) lk->setValueNotifyingHost (1.0f);      // (off by default since v1.1)
         double worst = 0;
         juce::String line;
         for (int note : { 36, 48, 60, 72, 84, 96 })
@@ -476,6 +481,7 @@ int main (int argc, char** argv)
         // wind 300 mmWS and helium 60 %: the servo still holds the key
         auto p = make (48000, 512);
         if (auto* rv = findParam (*p, "Reverb")) rv->setValueNotifyingHost (0.0f);
+        if (auto* lk = findParam (*p, "Pitch lock")) lk->setValueNotifyingHost (1.0f);
         auto* wind = findParam (*p, "Wind pressure");
         auto* gas = findParam (*p, "Gas");
         // 200 mmWS = Wind pressure 3.92: above 1.00 the knob's last third is geometric up to 5.00 (Params.h kWindKnee)

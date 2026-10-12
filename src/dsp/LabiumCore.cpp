@@ -66,16 +66,33 @@ double defaultIsing (int midi)
     return interp ((double) midi, xs, ys, 2);
 }
 
-double lossGain (double f, double a, double am, double Leff, double c, double rho, double gam, double mu, double loss, double morph)
+/* V11: the wall's share of the round-trip loss (viscothermal boundary layer, x the Wall loss knob). Phase 1 put the
+   radiation of both ends into the same first-order fit as exp(-0.5 (ka)^2) each: fitted at f1, 3 f1 and 9 f1, the fit
+   levelled off above 9 f1 (a c1 pipe kept |G| = 0.43 at its 16th harmonic, physically 0.2), so the upper resonances rang
+   on as in a narrow pipe. The ends now radiate in their own stage (derive()). */
+double wallGain (double f, double a, double Leff, double c, double rho, double gam, double mu, double loss)
 {
     const double Pr = 0.71;
     const double w = kTwoPi * f;
     const double nu = mu / rho;
     const double alpha = std::sqrt (w * nu / 2.0) / (a * c) * (1.0 + (gam - 1.0) / std::sqrt (Pr));
-    const double k = w / c;
+    return std::exp (-2.0 * alpha * Leff * loss);
+}
+
+/* the Phase 1 round-trip loss (Voice::phase1, for the checks against the Phase 1 C core) */
+double lossGainPhase1 (double f, double a, double am, double Leff, double c, double rho, double gam, double mu, double loss, double morph)
+{
+    const double k = kTwoPi * f / c;
     const double radTop = 0.5 * (k * a) * (k * a) * (1.0 - morph);
     const double radMouth = 0.5 * (k * am) * (k * am);
-    return std::exp (-2.0 * alpha * Leff * loss - radTop - radMouth);
+    return wallGain (f, a, Leff, c, rho, gam, mu, loss) * std::exp (-radTop - radMouth);
+}
+
+/* V11: |R| of an unflanged open end (Norris & Sheng 1989, as given by Silva et al. 2009), ka < 3.5; beyond, falling as (ka)^-2 */
+inline double rUnflanged (double ka)
+{
+    if (ka > 3.5) return 0.0987 * (3.5 / ka) * (3.5 / ka);
+    return (1.0 + 0.2 * ka - 0.084 * ka * ka) / (1.0 + 0.2 * ka + 0.416 * ka * ka);
 }
 
 /* residual of the third fit point for a pole a1: |H|^2 (1 + a1^2 + 2 a1 cw) = u + v cw */
@@ -196,9 +213,9 @@ void organName (int m, char* buf)
 }
 
 /* ---------------------------------------------------------- Prinzipal 8' */
-PipeDesign designPrinzipal (int midi, double voicingPa)
+PipeDesign designPrinzipal (int midi)
 {
-    const double scaleHT = -2.0, mouthFrac = 0.25, pChestMMWS = voicingPa / MMWS, flue0 = 0.65e-3;
+    const double scaleHT = -2.0, mouthFrac = 0.25, pChestMMWS = 75.0, flue0 = 0.65e-3;
     const double flueExp = 0.45, footRatio = 0.7, footLen = 0.17;
     const GasProps g = gasProps (1.0, 0.0, 0.0, 20.0);
     PipeDesign r;
@@ -294,7 +311,7 @@ void voiceParams (int midi, const Globals& G, const VoiceOverride& vo, const Pip
 }
 
 /* ------------------------------------------------------------- derived */
-void derive (const double* p, double fs, Derived& dv)
+void derive (const double* p, double fs, Derived& dv, bool phase1)
 {
     const double c = p[P_C];
     const double d = p[P_D], a = 0.5 * d;
@@ -343,14 +360,16 @@ void derive (const double* p, double fs, Derived& dv)
     dv.holeR = holeR;
     dv.holeX = holeX;
 
-    /* loss filter: first-order shelf fitted to the physical round-trip loss at f1, 3 f1, 9 f1 */
+    /* loss filter: first-order shelf fitted to the wall's round-trip loss at f1, 3 f1, 9 f1 (V11: the radiation follows below) */
     const double am = std::sqrt (H * W / kPi);
     const double f1 = c / (2.0 * Leff);
     double fa[3] { f1, 3.0 * f1, 9.0 * f1 };
     bool clamped = false;
     for (int i = 0; i < 3; ++i) if (fa[i] > 0.4 * fs) { fa[i] = 0.4 * fs * (0.6 + 0.2 * i); clamped = true; }
     double Gt[3], cw[3];
-    for (int i = 0; i < 3; ++i) Gt[i] = lossGain (fa[i], a, am, Leff, c, p[P_RHO], p[P_GAMMA], p[P_MU], p[P_LOSS], morph);
+    for (int i = 0; i < 3; ++i)
+        Gt[i] = phase1 ? lossGainPhase1 (fa[i], a, am, Leff, c, p[P_RHO], p[P_GAMMA], p[P_MU], p[P_LOSS], morph)
+                       : wallGain (fa[i], a, Leff, c, p[P_RHO], p[P_GAMMA], p[P_MU], p[P_LOSS]);
     cw[0] = std::cos (kTwoPi * fa[0] / fs);
     if (! clamped)
     {
@@ -509,6 +528,41 @@ void derive (const double* p, double fs, Derived& dv)
         double ph = std::atan2 (ni * dr - nr * di, nr * dr + ni * di);
         dv.lpDelay = -ph / w;
     }
+    dv.rb0 = 1.0; dv.rb1 = dv.rb2 = dv.ra1 = dv.ra2 = 0.0;
+    if (! phase1)
+    {
+        /* V11: the radiation of the open top and of the mouth, as a stage of its own after the wall's shelf:
+             |H|^2 = 1 / (1 + x^2 + beta x^4),   x = w tau,   tau = sqrt ((1 - morph) a^2 + am^2) / c
+           matches the low-frequency loss 0.5 (ka)^2 + 0.5 (k am)^2 of the two ends exactly, and beta their Norris & Sheng |R|
+           at x = 2 (towards the cross modes it falls a little slower than they do). An analogue H(s) = 1 / (1 + b1 s + b2 s^2),
+           b2 = sqrt(beta) tau^2, b1^2 = tau^2 + 2 b2 (no overshoot: Q < 0.71), bilinear, prewarped at x = 1. Its delay at f1
+           joins the shelf's (the bore is shortened by both); the upper harmonics see less of it, so their resonances go
+           slightly sharp, as the shrinking end correction of a real open end makes them. */
+        const double tau = std::sqrt ((1.0 - morph) * a * a + am * am) / c;
+        const double k2 = 2.0 / (tau * c);                                   // k at x = 2
+        const double G2 = std::pow (rUnflanged (k2 * a), 1.0 - morph) * rUnflanged (k2 * am);
+        const double beta = std::max (0.0, (1.0 / (G2 * G2) - 5.0) / 16.0);
+        const double b2 = std::sqrt (beta) * tau * tau, b1 = tau * std::sqrt (1.0 + 2.0 * std::sqrt (beta));
+        const double wp = std::min (1.0 / tau, 0.45 * kTwoPi * fs);
+        const double K = wp / std::tan (wp / (2.0 * fs));
+        if (beta < 1e-6)
+        {
+            // (a top half stopped leaves less to lose at x = 2 than the first-order prototype: that one, without the pole and zero at -1)
+            const double a0 = b1 * K + 1.0;
+            dv.rb0 = dv.rb1 = 1.0 / a0; dv.rb2 = 0.0;
+            dv.ra1 = (1.0 - b1 * K) / a0; dv.ra2 = 0.0;
+        }
+        else
+        {
+            const double a0 = b2 * K * K + b1 * K + 1.0;
+            dv.rb0 = 1.0 / a0; dv.rb1 = 2.0 / a0; dv.rb2 = 1.0 / a0;
+            dv.ra1 = (2.0 - 2.0 * b2 * K * K) / a0; dv.ra2 = (b2 * K * K - b1 * K + 1.0) / a0;
+        }
+        const double w = kTwoPi * f1 / fs, c1 = std::cos (w), s1 = std::sin (w), c2 = std::cos (2.0 * w), s2 = std::sin (2.0 * w);
+        const double nr = dv.rb0 + dv.rb1 * c1 + dv.rb2 * c2, ni = -(dv.rb1 * s1 + dv.rb2 * s2);
+        const double dr = 1.0 + dv.ra1 * c1 + dv.ra2 * c2, di = -(dv.ra1 * s1 + dv.ra2 * s2);
+        dv.lpDelay += -std::atan2 (ni * dr - nr * di, nr * dr + ni * di) / w;
+    }
     /* mouth window = lumped inertance (time constant M/c) */
     dv.taum = M / c;
     /* open <-> stopped morph: crossover frequency from Nyquist down to 5 Hz (recomputed only when it moves) */
@@ -553,7 +607,6 @@ void Voice::prepare (double sampleRate, uint32_t seed)
     up.allocate (len);
     lo.allocate (len);
     vml.allocate (len);
-    topl.allocate ((int) (0.04 * fs));             // v1.0: the top's path (MIDI 0: a 21 m pipe, 0.46 x that = 28 ms)
     maxTau = std::min (fs * 0.25, (double) vml.length() - 8.0);
     maxDline = (double) up.length() - 8.0;
     seed0 = seed;
@@ -571,8 +624,7 @@ void Voice::prepare (double sampleRate, uint32_t seed)
 
 void Voice::reset()
 {
-    up.clear(); lo.clear(); vml.clear(); topl.clear();
-    etaMean = etaVar = 0; topD = -1; jetSatF = 1.0;
+    up.clear(); lo.clear(); vml.clear();
     uint32_t s = (uint32_t) ((uint64_t) seed0 * 2654435761u);
     rng = s ? s : 1u;
     pg = 0; pf = 0;
@@ -580,6 +632,7 @@ void Voice::reset()
     lsh_x1 = lsh_y1 = dc_x1 = dc_y1 = 0;
     apm_x1 = apm_y1 = mq_prev = mu_prev = 0;
     vj = vj2 = 0; jl1 = jl2 = 0; gate_on = 0; onset_t = 0; kick_t = -1;
+    rx1 = rx2 = ry1 = ry2 = 0;
     um_prev = ut_prev = nz = phi = 0;
     resets = 0; fpos = 0; tau = -1;
     trem = 1.0;
@@ -609,8 +662,8 @@ void Voice::start (const ParamVec& tgt, double servoCents)
     if (servoEnabled) T[P_KCAL] = std::exp2 (servoApplied / 1200.0);
     A = T;
     B = T;
-    derive (A.data(), fs, *dv0);
-    derive (B.data(), fs, *dv1);
+    derive (A.data(), fs, *dv0, phase1);
+    derive (B.data(), fs, *dv1, phase1);
     regime = A[P_MORPH] > 0.5 ? 0.5 : 1.0;      // a stopped pipe speaks an octave down
     active = true;
 }
@@ -641,7 +694,7 @@ void Voice::nextFrame()
         }
         if (bj != bo) { moved = true; B[(size_t) j] = bj; }
     }
-    if (moved) derive (B.data(), fs, *dv1);
+    if (moved) derive (B.data(), fs, *dv1, phase1);
     else *dv1 = *dv0;
 }
 
@@ -687,12 +740,7 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
     double KmL = Km, invKm1L = invKm1, invZcL = invZc, lb0L = lb0, lb1L = lb1, la1L = la1, amL = am;
     const double kdq = k_dq, knz = k_nz, fsL = fs, jitL = jetJitter;
     double jl1L = jl1, jl2L = jl2, jitAL = jitA, jitGdL = jitGd;
-    // v1.0: the jet's swing at the lip, the top's path to the listener
-    double etaMeanL = etaMean, etaVarL = etaVar, kEtaL = kEtaTrack, topDL = topD, topDStepL = topDStep, satL = jetSatF;
-    const bool topPath = topSinElev > 0.0;
-    double* const topB = topl.data();
-    const int tmask = topl.maskBits();
-    int topW = topl.writePos();
+    double rx1L = rx1, rx2L = rx2, ry1L = ry1, ry2L = ry2, rb0L = rb0, rb1L = rb1, rb2L = rb2, ra1L = ra1, ra2L = ra2;
 
     /* MALLET: the wall and the mallet for the whole block first (the air column does not push back on the wall);
        the bore then takes the wall's breathing at the strike point, and the wall's radiation joins the output */
@@ -718,7 +766,7 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
 
     // P5: physical FM target, cross drive, side hole (frame constants, set again in each control frame)
     int fmTgtL = (int) A[P_FMTGT];
-    double lipAmpL = 2.5 * 0.4 * A[P_FLUE], crossKL = A[P_CROSS];
+    double lipAmpL = 2.5 * b, crossKL = A[P_CROSS];         // (b: the frame's jet half-width at the labium)
     const double* const crossInL = crossIn;
     double* const vmOutL = vmOut;
     bool holeOnL = holeOpen > 0.0;
@@ -765,7 +813,6 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
             targetL = gt * A[P_PCHEST] * trem;                      // tremulant on the wind
             fmdL = A[P_FMD]; dphiL = kTwoPi * A[P_FMF] / fsL;
             fmTgtL = (int) A[P_FMTGT];
-            lipAmpL = 2.5 * 0.4 * A[P_FLUE];                     // lip FM: the labium offset swings up to +-2.5 b
             crossKL = A[P_CROSS];
             // jet
             const double fres = d0.fres;
@@ -788,31 +835,28 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
             double fjet = A[P_JETBW] * UjL / h;
             if (fjet > 0.4 * fsL) fjet = 0.4 * fsL;
             kjL = 1.0 - std::exp (-kTwoPi * fjet / fsL);
-            // P5: nicking thickens the jet (b) and lowers its amplification (growth ~ 1/b); the jet's flow stays the same
+            /* V11: the jet on its way across the mouth. It leaves the flue with the half-width bE = 0.4 h and spreads as a plane
+               turbulent jet (Thwaites & Fletcher 1983: sech^2 profile, width growing linearly from x = 3 h; Goertler's
+               b = (x - 3 h) / 7.67) once that exceeds bE; its centre velocity falls as b^-1/2 with the momentum flux. Its
+               sinuous waves grow at mu = 0.16 / b (Phase 1's 0.4 / h at the flue, the rate Yoshikawa 1998 measured on organ
+               pipes), so they grow more slowly as the jet widens: exp(int mu dx) replaces Phase 1's exp(min(0.4 W / h, 4)).
+               The labium splits the local profile. At c1 the jet arrives 4.9 times as wide as it left the flue, and the swing
+               that Phase 1 compared with the flue's width (3 to 9 times it: a square-wave flow, string-like and hollow) is 2 to
+               4 times the local width. Nicking breaks the sheet into a thicker jet: nk times as wide at the labium, with the
+               same flow (P5; its growth stays that of the spreading jet: Phase 1's 1 / nk hid under the cap in the bass and
+               middle, and outside it would silence the pipe). */
             const double nk = 1.0 + 0.75 * A[P_NICK];
-            const double b0 = 0.4 * h * nk;
-            double ampexp = 0.4 * W / (h * nk);
-            /* v1.0: Phase 1 capped the growth at e^4 since nothing else bounded the jet's swing. With the swing's saturation
-               (below) the cap only bounds how far the long bass mouths (25 .. 35 h) overdrive the jet: e^6, 5 .. 15 x */
-            const double ampCap = jetSat > 0.0 ? 6.0 : A[P_AMPCAP];
-            if (ampexp > ampCap) ampexp = ampCap;
-            /* v1.0: across the mouth the jet spreads, b(x) = b0 + s x, as much as it is turbulent: laminar below a Reynolds number
-               U_j h / nu of 500 (the treble), transitional up to s = jetSpread from 2000 (bass pipes at strong wind). spRef: as
-               the pipe was voiced (the voicing pressure, air at 20 C) */
-            double sp = 0.0, spRef = 0.0;
-            if (jetSpread > 0.0)
+            const double bE = 0.4 * h, xs = 3.0 * h + 7.67 * bE;
+            double bW = bE, ampexp = 0.16 * W / bE;
+            if (phase1)
             {
-                auto spreadAt = [&] (double U, double nu) { return jetSpread * std::clamp ((U * h / nu - 500.0) / 1500.0, 0.0, 1.0); };
-                sp = spreadAt (UjL, A[P_MU] / std::max (1e-6, A[P_RHO]));
-                spRef = spreadAt (jetUjRef, 1.81e-5 / 1.204);
+                // Phase 1 (+ P5 nicking): no spreading, growth exp(min(0.4 W / (h nk), cap)), the flue's profile thickened by nk
+                ampexp = std::min (0.4 * W / (h * nk), A[P_AMPCAP]);
             }
-            kEtaL = 1.0 - std::exp (-fres / (2.0 * fsL));      // the swing over about two periods
-            if (topPath)
+            else if (W > xs)
             {
-                // v1.0: the open top is the pipe's length above the mouth: its sound comes that x sin(elevation) later
-                const double tgt = std::clamp (A[P_LPHYS] * topSinElev * fsL / std::max (1.0, A[P_C]), 0.0, (double) topl.length() - 4.0);
-                if (topDL < 0) topDL = tgt;
-                topDStepL = (tgt - topDL) / CTRL;
+                bW = (W - 3.0 * h) / 7.67;
+                ampexp = 0.16 * (xs / bE + 7.67 * std::log (bW / bE));
             }
             if (gt > 0.5)
             {
@@ -822,20 +866,14 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
             else gate_on = 0;
             if (gate_on && A[P_ONSET_T] > 0) ampexp += A[P_ONSET_B] * std::exp (-onset_t / A[P_ONSET_T]);
             hGL = A[P_JETGAIN] * std::exp (ampexp) * h;
-            b = b0 + sp * W; invbL = 1.0 / b; bHL = 0.4 * h * H;      // (the jet's flow stays that of the flue)
-            /* v1.0: the jet's sinuous wave grows only until its swing is about its own width (Fletcher): beyond jetSat b the
-               swing at the lip stays there. The wave's amplitude saturates, so within the period it stays a smooth wave; Phase 1's
-               jet swung up to 9 b in the treble and switched like a valve between inside and outside (a square wave, a buzz). */
-            if (jetSat > 0.0)
-            {
-                const double aLin = std::sqrt (2.0 * etaVarL);
-                satL = aLin > jetSat * b ? jetSat * b / aLin : 1.0;
-            }
-            else satL = 1.0;
+            b = nk * bW; invbL = 1.0 / b;
+            bHL = phase1 ? bE * H : H * std::sqrt (bE * bW);     // the flow scale H v b at the labium: v = Uj sqrt (bE / bW), b = bW
             noiseAL = A[P_NOISE] * h * 3.0;
-            // v1.0: the voicer sets the upper lip off the arriving jet's axis by half its spread (with the default labium offset,
-            // 0.5 b0 + 0.5 s W: half the jet's half-width at the lip), so the jet's pulse is asymmetric, as in a Principal
-            y0cL = A[P_Y0] + jetLipVoice * spRef * W;
+            // the labium offset (and the lip FM below) in half-widths of the jet where it meets the labium (without nicks:
+            // the lip does not move when the languid is nicked; P_Y0 is y0 x bE)
+            y0cL = A[P_Y0] * (bW / bE);
+            lipAmpL = 2.5 * bW;
+            jetB = b; jetG = ampexp; jetY0 = y0cL;
             pjKL = -rho * (4.0 / kPi * std::sqrt (2.0 * h * W)) / (W * H);
             pvKL = -0.5 * rho / 0.36;
             kickL = gate_on ? A[P_KICK] : 0; kickArmL = 0.5 * A[P_PCHEST] * 0.3; kickStepL = fres / fsL;
@@ -843,6 +881,7 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
             edgeKL = A[P_EDGE] / (H * W);
             radKL = rho / (4.0 * kPi) * fsL;
             KmL = 2.0 * d0.taum * fsL; lb0L = d0.lb0; lb1L = d0.lb1; la1L = d0.la1; amL = d0.aMorph;
+            rb0L = d0.rb0; rb1L = d0.rb1; rb2L = d0.rb2; ra1L = d0.ra1; ra2L = d0.ra2;
             invKm1L = 1.0 / (KmL + 1.0);
             invZcL = 1.0 / zc;
             /* foot: 4 Euler sub-steps (labium_core.c) while the foot is stiff (pallet opening, near-zero
@@ -966,14 +1005,7 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
         vj2L += (vjL - vj2L) * kjL;
         rngL ^= rngL << 13; rngL ^= rngL >> 17; rngL ^= rngL << 5;
         nzL += ((2.0 * (rngL * (1.0 / 4294967296.0)) - 1.0) - nzL) * knz;
-        const double etaLin = -hGL / UjL * vj2L;
-        {
-            // v1.0: the jet's swing at the lip as linear growth would make it (mean and variance over about two periods)
-            etaMeanL += (etaLin - etaMeanL) * kEtaL;
-            const double de = etaLin - etaMeanL;
-            etaVarL += (de * de - etaVarL) * kEtaL;
-        }
-        eta = etaLin * satL + noiseAL * nzL;
+        eta = -hGL / UjL * vj2L + noiseAL * nzL;
         const double y0e = fmTgtL == 2 ? y0cL + lipAmpL * fmdL * fmS : y0cL;
         qin = bHL * UjFlow * (1.0 + fastTanh ((eta - y0e) * invbL));
         const double dq = (qin - qin_prevL) * fsL;
@@ -1006,8 +1038,11 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
         }
         const double lsh = lb0L * pplusEnd + lb1L * lsh_x1L - la1L * lsh_y1L;
         lsh_x1L = pplusEnd; lsh_y1L = lsh;
-        const double dcb = lsh - dc_x1L + 0.99995 * dc_y1L;
-        dc_x1L = lsh; dc_y1L = dcb;
+        // V11: the radiation of the two ends
+        const double rad = rb0L * lsh + rb1L * rx1L + rb2L * rx2L - ra1L * ry1L - ra2L * ry2L;
+        rx2L = rx1L; rx1L = lsh; ry2L = ry1L; ry1L = rad;
+        const double dcb = rad - dc_x1L + 0.99995 * dc_y1L;
+        dc_x1L = rad; dc_y1L = dcb;
         /* open <-> stopped allpass. For an open top its coefficient is 1 - 2e-9: the identity, but with its pole at -1
            a Nyquist residue in its state (left by the morph moving) never died away, and the top radiated it (P5: found
            at -9 dBFS 25 s after a release). There it is the identity outright, with its state kept as that of one. */
@@ -1114,8 +1149,7 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
             std::fill (loB, loB + dlen, 0.0);
             std::fill (vmB, vmB + vlen, 0.0);
             apm_x1L = apm_y1L = mq_prevL = mu_prevL = vjL = vj2L = jl1L = jl2L = 0.0;
-            etaMeanL = etaVarL = 0.0;
-            lsh_x1L = lsh_y1L = dc_x1L = dc_y1L = 0.0;
+            lsh_x1L = lsh_y1L = dc_x1L = dc_y1L = rx1L = rx2L = ry1L = ry2L = 0.0;
             vmL = dq_lpL = 0.0;
             qin_prevL = 0.0;
             if (! (std::abs (pfL) <= 1e12)) pfL = 0.0;
@@ -1128,21 +1162,8 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
             ++resets;
         }
 
-        double otH = ot;
-        if (topPath)
-        {
-            // v1.0: the top's sound as it reaches the listener (linear read; the delay glides with the pipe's length)
-            topB[topW] = ot;
-            topDL += topDStepL;
-            const double pos = (double) topW - topDL;
-            int i = (int) pos;
-            if ((double) i > pos) --i;
-            const double fr = pos - (double) i;
-            otH = topB[i & tmask] + (topB[(i + 1) & tmask] - topB[i & tmask]) * fr;
-            topW = (topW + 1) & tmask;
-        }
-        mixL[t] += 0.85 * om + 0.35 * otH + 0.6 * oh;
-        mixR[t] += 0.35 * om + 0.85 * otH + 0.6 * oh;
+        mixL[t] += 0.85 * om + 0.35 * ot + 0.6 * oh;
+        mixR[t] += 0.35 * om + 0.85 * ot + 0.6 * oh;
         peak = std::max (peak, std::abs (om + oh));
         if (sig) sig[t] = om + oh;
         if (malOn && ! hostMix)
@@ -1216,6 +1237,7 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
     holePrevDh = holePrevDhL; holePrevDt = holePrevDtL;
     holeA = holeAL; holeB = holeBL; holeI2Y0 = holeI2Y0L; holeGLow = holeGLowL; holeDh = holeDhL;
     jitA = jitAL; jitGd = jitGdL;
+    rx1 = rx1L; rx2 = rx2L; ry1 = ry1L; ry2 = ry2L; rb0 = rb0L; rb1 = rb1L; rb2 = rb2L; ra1 = ra1L; ra2 = ra2L;
     pg = pgL; pf = pfL; Uj = UjL; vm = vmL;
     qin_prev = qin_prevL; dq_lp = dq_lpL; lsh_x1 = lsh_x1L; lsh_y1 = lsh_y1L; dc_x1 = dc_x1L; dc_y1 = dc_y1L;
     apm_x1 = apm_x1L; apm_y1 = apm_y1L; mq_prev = mq_prevL; mu_prev = mu_prevL; vj = vjL; vj2 = vj2L; jl1 = jl1L; jl2 = jl2L;
@@ -1225,8 +1247,6 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
     fpos = fposL; footSteps = footStepsL;
     Spipe = SpipeL; SpSm = SpSmL; Sflue = SflueL; Stoe = StoeL; k2r = k2rL; kp = kpL; target = targetL; kfStep = kfStepL;
     fmd = fmdL; dphi = dphiL; kj = kjL; hG = hGL; invb = invbL; bH = bHL; noiseA = noiseAL; y0c = y0cL;
-    etaMean = etaMeanL; etaVar = etaVarL; kEtaTrack = kEtaL; topD = topDL; topDStep = topDStepL; jetSatF = satL;
-    topl.setWritePos (topW);
     pjK = pjKL; pvK = pvKL; kick = kickL; kickArm = kickArmL; kickStep = kickStepL; edgeK = edgeKL; radK = radKL;
     Km = KmL; invKm1 = invKm1L; invZc = invZcL; lb0 = lb0L; lb1 = lb1L; la1 = la1L; am = amL;
 

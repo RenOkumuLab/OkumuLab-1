@@ -92,7 +92,8 @@ window.OKL = window.OKL || {};
       sub: (v, c) => 'I ' + isingOf(c, v).toFixed(2) + '  ×' + v.toFixed(2),
       band: (c) => (c.geom ? [cutupForIsing(c, 3), cutupForIsing(c, 2)] : null), bandNote: 'intonation number I = 2–3' },
     { key: 'y0b', g: 'midi', slot: 2, label: 'Labium offset', en: 'y₀', min: -2.5, max: 2.5, cc: 71, bipolar: true,
-      fmt: (v) => sgn(v, 2), unit: 'b', sub: (v, c) => (c.geom ? sgn(v * 0.4 * c.geom.h * 1e3, 3) + ' mm' : '') },
+      // (v1.1: b is the jet's half-width where it meets the labium, after spreading across the mouth; nicks do not move the lip)
+      fmt: (v) => sgn(v, 2), unit: 'b', sub: (v, c) => (c.geom ? sgn(v * (c.geom.y0b1 || 0.4 * c.geom.h) * 1e3, 3) + ' mm' : '') },
     { key: 'mouthFrac', g: 'voice', label: 'Mouth width', en: 'H', min: 0.1, max: 0.31,
       fmt: (v, c) => (c.geom ? (c.geom.H * 1e3).toFixed(1) : '—'), unit: 'mm', sub: (v) => '1/' + (1 / v).toFixed(2) + ' circ.',
       band: () => [1 / 7, 2 / 7], bandNote: '1/7–2/7 of the circumference' },

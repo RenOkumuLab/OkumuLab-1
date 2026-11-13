@@ -40,7 +40,7 @@ jobs:
   # ------------------------------------------------------------------------------------------------ macOS
   macos:
     name: macOS (universal)
-    runs-on: macos-14
+    runs-on: macos-15                   # (macos-14 is no longer offered: "macos-14-arm64-us-default is not supported")
     timeout-minutes: 150
     env:
       A: build/OkumuLab1_artefacts/Release

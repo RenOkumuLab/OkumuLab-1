@@ -569,39 +569,47 @@ void testPitchLock()
 }
 
 /* ================================================================== 3. cpu */
+Globals stopGlobals (int stop);
+/* the engine's load (% of one core) with n voices sounding on these knobs, over 8 s (a cut-up wobble if moving) */
+double cpuLoad (Globals G, int voicesN, bool moving, double seconds = 8.0, double jitter = Engine::kJetJitter, int key = -1)
+{
+    Engine e;
+    e.jetJitter = jitter;
+    e.prepare (48000, 512);
+    e.setGlobals (G);
+    for (int i = 0; i < voicesN; ++i) e.noteOn (i, key >= 0 ? key : 36 + (i * 7) % 60, 100);
+    std::vector<float> L (512), R (512);
+    // settle
+    for (int b = 0; b < 100; ++b) e.process (L.data(), R.data(), 512);
+    const int blocks = (int) (seconds * 48000 / 512);
+    const double cut0 = G.cutup;
+    const auto t0 = std::chrono::steady_clock::now();
+    for (int b = 0; b < blocks; ++b)
+    {
+        if (moving)
+        {
+            // a knob moving continuously (cut-up wobble) keeps derive() busy in every voice
+            G.cutup = cut0 + 0.2 * std::sin (b * 0.05);
+            e.setGlobals (G);
+        }
+        e.process (L.data(), R.data(), 512);
+    }
+    const double sec = std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count();
+    return sec / (blocks * 512 / 48000.0) * 100.0;
+}
+
 void testCpu()
 {
     std::printf ("\n== 3. CPU: engine at 48 kHz host (96 kHz internal), 512-sample blocks, one core ==\n");
     const int nv[] { 1, 8, 16, 32 };
-    for (int voicesN : nv)
-    {
-        for (bool moving : { false, true })
-        {
-            Engine e;
-            e.prepare (48000, 512);
-            Globals G;
-            e.setGlobals (G);
-            for (int i = 0; i < voicesN; ++i) e.noteOn (i, 36 + (i * 7) % 60, 100);
-            std::vector<float> L (512), R (512);
-            // settle
-            for (int b = 0; b < 100; ++b) e.process (L.data(), R.data(), 512);
-            const int blocks = (int) (8.0 * 48000 / 512);
-            const auto t0 = std::chrono::steady_clock::now();
-            for (int b = 0; b < blocks; ++b)
+    for (int stop : { 0, 1 })
+        for (int voicesN : nv)
+            for (bool moving : { false, true })
             {
-                if (moving)
-                {
-                    // a knob moving continuously (cut-up wobble) keeps derive() busy in every voice
-                    G.cutup = 1.0 + 0.2 * std::sin (b * 0.05);
-                    e.setGlobals (G);
-                }
-                e.process (L.data(), R.data(), 512);
+                const double load = cpuLoad (stop ? stopGlobals (STOP_GEDACKT) : Globals(), voicesN, moving);
+                std::printf ("  %s %2d voices %-14s %6.1f %% of one core  (%.2f %% per voice)\n", stop ? "Gedackt  " : "Prinzipal", voicesN,
+                             moving ? "knob moving" : "steady", load, load / voicesN);
             }
-            const double sec = std::chrono::duration<double> (std::chrono::steady_clock::now() - t0).count();
-            const double load = sec / (blocks * 512 / 48000.0) * 100.0;
-            std::printf ("  %2d voices %-14s %6.1f %% of one core  (%.2f %% per voice)\n", voicesN, moving ? "knob moving" : "steady", load, load / voicesN);
-        }
-    }
 }
 
 /* =============================================================== 4. stress */
@@ -774,6 +782,7 @@ void testDerive()
             if (r < 0.1) x = 0; else if (r < 0.2) x = 1; else if (r < 0.5) x = toNorm (d, d.def);
             g.*(d.field) = fromNorm (d, x);
         }
+        g.ears = 0.0; g.arch = 0.0;            // (V2: parts Phase 1 does not have)
         const int midi = 24 + (int) (U (rng) * 85);
         ParamVec p;
         voiceParams (midi, g, VoiceOverride {}, designPrinzipal (midi), p);
@@ -1033,6 +1042,19 @@ void testMallet()
         std::printf ("  contact, rubber on thick zinc at 1 m/s: %.3f ms (Hertz, rigid wall: %.3f ms), peak force %.1f N\n",
                      m.lastContactTime() * 1e3, tH * 1e3, m.lastPeakForce());
         check (m.lastContactTime() > 0.95 * tH && m.lastContactTime() < 1.15 * tH, "contact time follows Hertz (soft head, stiff wall)");
+        // V2: the yarn head, F = K x^p (p 2.54): its rigid-wall contact time from the energy integral
+        s.head = kNumHeads - 1;
+        m.setParams (s);
+        m.strike (1.0);
+        m.render (9600, sh.data(), q.data());
+        const double p = headProps (s.head).p, qq = 1.0 / (p + 1.0);
+        const double tP = 2.0 * std::pow ((p + 1.0) * m.malletMass() / (2.0 * m.contactStiffness()), qq) * std::sqrt (kPi)
+                          * std::tgamma (1.0 + qq) / std::tgamma (0.5 + qq);
+        std::printf ("  contact, yarn on thick zinc at 1 m/s: %.3f ms (F = K x^%.2f, rigid wall: %.3f ms), peak force %.1f N\n",
+                     m.lastContactTime() * 1e3, p, tP * 1e3, m.lastPeakForce());
+        check (std::string (headProps (s.head).name) == "Yarn" && m.lastContactTime() > 0.95 * tP && m.lastContactTime() < 1.15 * tP
+                   && m.lastContactTime() > 3.0 * tH,
+               "yarn: contact time follows its power law, several times the rubber head's");
     }
     // --- a c1 pipe: the spectrum of the sound is the model's modes, decays follow the losses
     {
@@ -1162,7 +1184,7 @@ void testMallet()
             x.prepare (t % 3 == 0 ? 44100 : (t % 3 == 1 ? 48000 : 96000), 256);
             Globals g;
             g.excite = 1; g.reverb = 0;
-            g.metal = (double) (t % 5); g.head = (double) ((t / 5) % 4);
+            g.metal = (double) (t % 5); g.head = (double) ((t / 5) % kNumHeads);
             g.wallMult = 0.5 * std::pow (4.0, U (rng)); g.headD = 10 + 40 * U (rng); g.strikePos = 0.05 + 0.9 * U (rng);
             g.damper = U (rng); g.morph = U (rng) < 0.3 ? 1.0 : (U (rng) < 0.5 ? 0.0 : U (rng));
             g.scaleHT = -20 + 36 * U (rng); g.glide = -12 + 24 * U (rng); g.gas = -1 + 2 * U (rng); g.tempC = -30 + 110 * U (rng);
@@ -1316,6 +1338,15 @@ std::vector<float> engineNote (const Globals& g, int midi, double dur, double fr
     }
     return out;
 }
+/* V2: the knobs of a stop as built (what selecting it sets) */
+Globals stopGlobals (int stop)
+{
+    double v[kMaxParamsCheck];
+    stopValues (stop, v);
+    Globals g;
+    for (int i = 0; i < kNumParams; ++i) g.*(kParamDefs[i].field) = v[i];
+    return g;
+}
 double strongestHz (const std::vector<float>& x)
 {
     std::vector<double> d (x.begin(), x.end());
@@ -1465,17 +1496,23 @@ void testLab()
         std::printf ("  nicking 0 -> 1 (turbulence 3 %%): energy above 6 kHz %.1f -> %.1f dB re total\n", hf (a), hf (b));
         check (hf (b) < hf (a) - 3.0, "nicking: less noise and high partials");
     }
-    // --- beyond the compass: MIDI 0 and 127 are stable pipes
+    // --- V2: the compass is MIDI 24-96 for both stops: its ends sound, the notes beyond it do nothing
     {
         Globals g;
-        const std::vector<float> lo = engineNote (g, 0, 3.0, 1.5), hi = engineNote (g, 127, 2.0);
-        double pl = 0, ph = 0;
+        const std::vector<float> lo = engineNote (g, 24, 3.0, 1.5), hi = engineNote (g, 96, 2.0);
+        const std::vector<float> below = engineNote (g, 23, 1.0), above = engineNote (g, 97, 1.0);
+        const Globals gg = stopGlobals (STOP_GEDACKT);
+        const std::vector<float> glo = engineNote (gg, 24, 3.0, 1.5), ghi = engineNote (gg, 96, 2.0), gout = engineNote (gg, 97, 1.0);
+        auto peakOf = [] (const std::vector<float>& x, bool& fin) { double p = 0; for (float v : x) { p = std::max (p, (double) std::abs (v)); fin = fin && std::isfinite (v); } return p; };
         bool fin = true;
-        for (float v : lo) { pl = std::max (pl, (double) std::abs (v)); fin = fin && std::isfinite (v); }
-        for (float v : hi) { ph = std::max (ph, (double) std::abs (v)); fin = fin && std::isfinite (v); }
-        std::printf ("  MIDI 0 (%.1f Hz key, a %.0f m pipe): peak %.3f, strongest %.1f Hz; MIDI 127: peak %.4f, strongest %.0f Hz\n",
-                     midiToHz (0), designPrinzipal (0).lPhys, pl, strongestHz (lo), ph, strongestHz (hi));
-        check (fin && pl <= 1.0 && ph <= 1.0 && pl > 1e-3, "pipes beyond the compass: finite, they sound");
+        const double pl = peakOf (lo, fin), ph = peakOf (hi, fin), pb = peakOf (below, fin), pa = peakOf (above, fin);
+        const double gl = peakOf (glo, fin), gh = peakOf (ghi, fin), go = peakOf (gout, fin);
+        std::printf ("  Prinzipal MIDI 24 (%.1f Hz, a %.2f m pipe): peak %.3f; MIDI 96: peak %.4f; MIDI 23 / 97: peak %.1e / %.1e\n",
+                     midiToHz (24), designPrinzipal (24).lPhys, pl, ph, pb, pa);
+        std::printf ("  Gedackt MIDI 24 (a %.2f m body): peak %.3f; MIDI 96 (%.0f mm): peak %.4f; MIDI 97: peak %.1e\n",
+                     designGedackt (24).lPhys, gl, designGedackt (96).lPhys * 1e3, gh, go);
+        check (fin && pl <= 1.0 && ph <= 1.0 && pl > 1e-3 && ph > 1e-4 && gl > 1e-3 && gh > 1e-4, "the compass's ends (MIDI 24, 96) sound on both stops, finite");
+        check (pb == 0.0 && pa == 0.0 && go == 0.0, "notes outside MIDI 24-96 sound nothing");
     }
     // --- matrix: LFO 1 -> cut-up moves the mouth; overblow -> stopped closes an overblowing pipe
     {
@@ -1497,12 +1534,9 @@ void testLab()
 
         Engine e2;
         e2.prepare (48000, 480);
-        double v[kMaxParamsCheck];
-        int pr = -1;
-        for (int i = 0; i < (int) factoryPresets().size(); ++i) if (std::string (factoryPresets()[(size_t) i].name).find ("Overblow") == 0) pr = i;
-        presetValues (pr, v);
+        // (the 1.x recipe "Overblow closes the pipe": full wind on a mouth cut low, overblow -> open/stopped)
         Globals g2;
-        for (int i = 0; i < kNumParams; ++i) g2.*(kParamDefs[i].field) = v[i];
+        g2.bellows = 5; g2.cutup = 0.65; g2.pitchLock = 0; g2.modSrc1 = MS_OVERBLOW; g2.modDst1 = 5; g2.modAmt1 = 1.0;
         g2.reverb = 0;
         e2.setGlobals (g2);
         e2.noteOn (48, 48, 100);       // (below c1, where 480 mmWS overblows)
@@ -1512,10 +1546,10 @@ void testLab()
             e2.process (L.data(), R.data(), 480);
             for (int i = 0; i < Engine::kMaxVoices; ++i) if (e2.voice (i).active) { mMax = std::max (mMax, e2.voice (i).frame()[P_MORPH]); obMax = std::max (obMax, e2.voice (i).modOver); }
         }
-        std::printf ("  recipe 'Overblow closes the pipe' (c, Wind pressure 5.00, cut-up x0.65): overblow source up to %.2f, top closed up to %.0f %%\n", obMax, mMax * 100);
+        std::printf ("  'Overblow closes the pipe' (c, Wind pressure 5.00, cut-up x0.65): overblow source up to %.2f, top closed up to %.0f %%\n", obMax, mMax * 100);
         check (obMax > 0.5 && mMax > 0.5, "matrix: the pipe's own overblowing closes its top");
     }
-    // --- every recipe plays a short chord, finite and within full scale
+    // --- every program (V2: every stop) plays a short chord, finite and within full scale
     {
         int bad = 0;
         double v[kMaxParamsCheck];
@@ -1538,8 +1572,441 @@ void testLab()
             }
             if (pk < 1e-3) ++bad;
         }
-        std::printf ("  %d recipes: chord and release, bad samples or silent recipes %d\n", (int) factoryPresets().size(), bad);
-        check (bad == 0, "every recipe sounds, finite and within full scale");
+        std::printf ("  %d programs (stops): chord and release, bad samples or silent programs %d\n", (int) factoryPresets().size(), bad);
+        check (bad == 0, "every program sounds, finite and within full scale");
+        check ((int) factoryPresets().size() == kNumStops, "the programs are the stops");
+    }
+}
+
+/* ================================================================ 11. V2: Gedackt 8' */
+ParamVec gedacktPipe (int midi, const Globals& g)
+{
+    ParamVec p;
+    voiceParams (midi, g, VoiceOverride {}, designGedackt (midi), p);
+    return p;
+}
+
+/* partials 1..12 of a steady segment, dB re the fundamental (the measured f), and the level [dB SPL at 1 m] */
+Metrics gedacktTone (const ParamVec& p, double dur, double from, bool servo = false, double servoStart = 0.0)
+{
+    const auto m = renderCpp (p, dur, FS, servo, -1, nullptr, servoStart, Engine::kJetJitter);
+    return analyze (m, FS, p[P_FTARGET], from);
+}
+
+void testGedackt()
+{
+    std::printf ("\n== 11. Gedackt 8' (V2): design, speech across the compass, open top, pitch lock, ears, arched cut-up, stop change, wooden box ==\n");
+    const Globals G = stopGlobals (STOP_GEDACKT);
+    // (a) the design: Dickson's Stopped Diapason (CC 82.5 x 101.6 mm, halving every 19.7 HT; v2.0 until then Janke's
+    // 60 x 75 mm), Janke's norm cut-up + 5 HT (his +7.5, 2.5 lower at low wind), a quarter wave less Fletcher & Rossing's
+    // mouth correction
+    {
+        std::printf ("  key  f [Hz]   W x D [mm]       cut-up  H/W   flue   M [mm]  body [mm]  Ising  (75 mmWS)\n");
+        bool sane = true;
+        for (int k : { 24, 36, 48, 60, 72, 84, 96 })
+        {
+            const PipeDesign d = designGedackt (k);
+            char nm[8];
+            organName (k, nm);
+            std::printf ("  %-4s %7.1f  %6.1f x %6.1f  %6.2f  %4.2f  %5.2f  %6.1f  %8.1f  %5.2f\n", nm, d.f0, d.mouthW * 1e3, d.depth * 1e3, d.cutup * 1e3,
+                         d.cutup / d.mouthW, d.flue * 1e3, d.M * 1e3, d.lPhys * 1e3, d.ising);
+            sane = sane && d.lPhys > 0.0 && d.ising > 1.0 && d.ising < 3.0 && std::abs (d.mouthW / d.depth - 82.5 / 101.6) < 1e-9;
+        }
+        const PipeDesign c = designGedackt (36), c1 = designGedackt (60), tc = designGedackt (48);
+        check (std::abs (c.mouthW - 0.0825) < 1e-9 && std::abs (c.depth - 0.1016) < 1e-9 && std::abs (tc.mouthW * 1e3 - 54.0) < 0.3
+                   && std::abs (tc.depth * 1e3 - 66.7) < 0.3,
+               "Gedackt C 82.5 x 101.6 mm, tenor C 54.0 x 66.7 mm inside (Dickson's Stopped Diapason)");
+        check (std::abs (c1.cutup - 1.464 * std::pow (2.0, 5.0 / 16.0) * kPi * 0.1555 * std::pow (2.0, -24.0 / 16.0) / 16.0) < 1e-12,
+               "cut-up: Janke's norm cut-up of the sounding pitch + 7.5 - 2.5 HT (low wind) (c1: 10.8 mm x 2^(5/16)), x the voicing (c1 1.464)");
+        {
+            // v2.0: the user's voicing per key range on Janke's rule (C as his own house-organ Gedeckt 8', within 10 % of 35 mm)
+            auto rule = [] (int k) { return std::pow (2.0, 5.0 / 16.0) * kPi * 0.1555 * std::pow (2.0, -(k - 36) / 16.0) / 16.0; };
+            bool ok = std::abs (c.cutup * 1e3 - 35.0) < 3.5;
+            const int keys[] { 24, 36, 54, 55, 66, 67, 78, 79, 91, 92, 96 };
+            const double want[] { 1.00, 1.00, 1.00, 1.468, 1.457, 1.607, 1.580, 1.605, 1.532, 1.456, 1.410 };
+            for (int i = 0; i < 11; ++i) ok = ok && std::abs (designGedackt (keys[i]).cutup / rule (keys[i]) - want[i]) < 1e-9;
+            check (ok, "cut-up voicing per key: x1.00 to f#, g 1.468 .. f#1 1.457, g1 1.607 .. f#2 1.580, g2 1.605 .. g3 1.532, g#3 1.456 .. c4 1.410 (C within 10 % of Janke's 35 mm)");
+        }
+        check (std::abs (kGedacktFlue47 * std::pow (9.0 / 47.0, kGedacktFlueExp) - 0.6e-3) < 0.006e-3
+                   && std::abs (c.flue - kGedacktFlue47 * std::pow (c.mouthW / 0.047, kGedacktFlueExp)) < 1e-12
+                   && tc.flue <= 1.5875e-3 && c.flue < 3.175e-3 && designGedackt (24).flue < 3.175e-3,
+               "flue of real wooden pipes (BDO 47 mm: 1 mm, Schuke 9 mm: 0.6 mm), within Dickson's (tenor C <= 1/16 in, CC < 1/8 in)");
+        check (sane && c.lPhys > 1.10 && c.lPhys < 1.30 && designGedackt (24).lPhys > 2.3 && designGedackt (96).lPhys > 0.012
+               && designGedackt (96).lPhys < 0.045, "body lengths: C about 1.2 m (Dickson: about 4 ft), C, about 2.4 m, c4 2 cm; Ising 1..3");
+        // the stop's own defaults (RESET) and the Prinzipal's untouched
+        int prBad = 0;
+        for (int i = 0; i < kNumParams; ++i) if (std::string (kParamDefs[i].id) != "stop" && stopDefault (STOP_PRINZIPAL, i) != kParamDefs[i].def) ++prBad;
+        check (prBad == 0 && G.morph == 1.0 && G.ears == 0.0 && G.arch == 0.0 && G.stop == 1.0 && std::abs (G.loss - 1.27) < 1e-12
+               && std::abs (G.scaleHT - gedacktScaleHT()) < 1e-12 && G.y0b == 0.0,
+               "stop defaults: Gedackt closed 100 %, no ears (0 %), arch 0 % (straight), wall loss 1.27, lip on the jet (0 b); Prinzipal's as before");
+    }
+    // (b) every third key, as built (pitch lock off): speaks on its fundamental, near the key, odd partials over even ones
+    {
+        std::printf ("  key    f [Hz]  cents  regime  level |   H2    H3    H4    H5    H6    H7\n");
+        {
+            const Metrics mp = analyze (renderCpp ([] { ParamVec v; Globals g; voiceParams (24, g, VoiceOverride {}, designPrinzipal (24), v); return v; }(),
+                                                   4.0, FS, false, -1, nullptr, 0.0, Engine::kJetJitter), FS, midiToHz (24), 3.0);
+            std::printf ("  (Prinzipal C, for comparison: %.1f dB, x%.2f)\n", mp.db, mp.regime);
+        }
+        int notFund = 0, offKey = 0, quiet = 0, evenOverOdd = 0, n = 0;
+        double evenGap = 0;
+        for (int k = 24; k <= 96; k += 3)
+        {
+            const ParamVec p = gedacktPipe (k, G);
+            const double dur = k < 40 ? 4.0 : 2.6;
+            const Metrics m = gedacktTone (p, dur, dur - 1.0);
+            double cand = 0;
+            const double c = std::isfinite (m.f) ? cents (m.f, p[P_FTARGET]) : 999.0;
+            (void) cand;
+            char nm[8];
+            organName (k, nm);
+            std::printf ("  %-5s %8.2f %+6.1f  %5.2f  %5.1f | %5.1f %5.1f %5.1f %5.1f %5.1f %5.1f\n", nm, m.f, c, m.regime, m.db,
+                         m.hm[1], m.hm[2], m.hm[3], m.hm[4], m.hm[5], m.hm[6]);
+            if (! (std::abs (m.regime - 1.0) < 0.06)) ++notFund;
+            if (! (std::abs (c) < 10.0)) ++offKey;
+            if (! (m.db > 45.0)) ++quiet;
+            // the even partials (2, 4) against their odd neighbours (1 and 3, 3 and 5), where they are below 15 kHz
+            if (std::isfinite (m.hm[1]) && std::isfinite (m.hm[2]))
+            {
+                const double g2 = m.hm[1] - 0.5 * (0.0 + m.hm[2]);
+                evenGap += g2; ++n;
+                if (g2 > 0) ++evenOverOdd;
+            }
+        }
+        std::printf ("  even partial H2 against the mean of H1 and H3: %.1f dB on average; H2 above that mean at %d of %d keys\n", n ? evenGap / n : 0.0, evenOverOdd, n);
+        check (quiet == 0, "Gedackt: every key speaks (above 45 dB at 1 m from the mouth)");
+        check (notFund == 0, "Gedackt: every key on its fundamental (stopped pipe, closed)");
+        check (offKey == 0, "Gedackt as built (pitch lock off, its stopper set at the reference wind): within 10 cents of the key");
+        check (n > 0 && evenGap / n < -10.0, "Gedackt: the even partials well below their odd neighbours (stopped pipe)");
+        // v2.0: the lip on the jet (0 b) generates no even partial; the Bernoulli term of the jet drive leaves a weak one
+        {
+            const Metrics mb = gedacktTone (gedacktPipe (60, G), 2.6, 1.6);
+            ParamVec po;
+            voiceParams (60, Globals(), VoiceOverride {}, designPrinzipal (60), po);
+            const Metrics mp = gedacktTone (po, 2.6, 1.6);
+            std::printf ("  c1, lip on the jet: H2 %.1f dB, H3 %.1f dB (the Bernoulli term); Prinzipal H2 %.1f dB\n", mb.hm[1], mb.hm[2], mp.hm[1]);
+            check (mb.hm[1] > -90.0 && mb.hm[1] < -50.0 && mb.hm[1] < mb.hm[2] - 40.0,
+                   "Gedackt, lip on the jet: a weak octave from the Bernoulli term of the jet drive (Fletcher 1976), far below the twelfth");
+        }
+    }
+    // (c) the stopper drawn (Open 100 %): the same body sounds about an octave up, a little flat (end correction at the open top)
+    {
+        Globals go = G;
+        go.morph = 0.0;
+        int octave = 0, n = 0;
+        std::printf ("  open:");
+        for (int k : { 36, 48, 60, 72, 84 })
+        {
+            const ParamVec p = gedacktPipe (k, go);
+            const Metrics m = gedacktTone (p, 2.6, 1.6);
+            std::printf ("  %d: x%.3f (%+.0f c re the octave)", k, m.regime, cents (m.regime, 2.0));
+            ++n;
+            if (m.regime > 1.75 && m.regime < 2.05) ++octave;
+        }
+        std::printf ("\n");
+        check (octave == n, "Gedackt opened: about an octave up, flat (the open top's end correction, the jet slower than the new resonance)");
+    }
+    // (d) pitch lock 100 % with the servo: on the key
+    {
+        int bad = 0;
+        std::printf ("  pitch lock 100 %%:");
+        for (int k : { 36, 48, 60, 72, 84, 96 })
+        {
+            Globals gl = G;
+            gl.pitchLock = 1.0;
+            const ParamVec p = gedacktPipe (k, gl);
+            const auto m = renderCpp (p, 3.0, FS, true, -1, nullptr, 1200.0 * std::log2 (kcalForStop (STOP_GEDACKT, k)), Engine::kJetJitter);
+            double cand = 0;
+            const size_t i0 = (size_t) (2.0 * FS);
+            const double e = pitchError (m.data() + i0, m.size() - i0, FS, p[P_FTARGET], &cand);
+            std::printf ("  %d: %+.2f c (x%.1f)", k, e, cand);
+            if (! (std::abs (e) < 3.0 && cand == 1.0)) ++bad;
+        }
+        std::printf ("\n");
+        check (bad == 0, "Gedackt, pitch lock 100 %: within 3 cents of the key");
+    }
+    // (e) ears and (f) the arched cut-up, at c1 (pitch lock off)
+    {
+        Globals gE = G;
+        gE.ears = 1.0;          // (v2.0: the Gedackt starts without them, 0 %)
+        const Metrics mE = gedacktTone (gedacktPipe (60, gE), 2.6, 1.6), mN = gedacktTone (gedacktPipe (60, G), 2.6, 1.6);
+        const double dM = mouthCorrection (true, designGedackt (60).d, designGedackt (60).mouthW, designGedackt (60).cutup, 1.0)
+                          - mouthCorrection (true, designGedackt (60).d, designGedackt (60).mouthW, designGedackt (60).cutup, 0.0);
+        std::printf ("  ears at c1: %.2f Hz with, %.2f Hz without (%+.1f c; their end correction %+.1f mm); level %+.1f dB, H3 %+.1f dB\n", mE.f, mN.f,
+                     cents (mE.f, mN.f), dM * 1e3, mE.db - mN.db, mE.hm[2] - mN.hm[2]);
+        check (mE.f < mN.f && cents (mE.f, mN.f) > -40.0, "ears: the pipe a little flatter (their air plug at the mouth)");
+        Globals ga = G;
+        ga.arch = 0.0;
+        const Metrics mS = gedacktTone (gedacktPipe (60, ga), 2.6, 1.6);
+        std::printf ("  arched cut-up at c1: level %.1f dB (straight %.1f), H3 %.1f (%.1f), H5 %.1f (%.1f), f %.2f (%.2f) Hz\n", mE.db, mS.db,
+                     mE.hm[2], mS.hm[2], mE.hm[4], mS.hm[4], mE.f, mS.f);
+        check (std::abs (mE.regime - 1.0) < 0.06 && std::abs (mS.regime - 1.0) < 0.06 && mE.db > 50 && mS.db > 50, "arched and straight cut-up both speak on the fundamental");
+        // the strips' mean is the straight cut-up: same mouth area, same end correction
+        ParamVec pa = gedacktPipe (60, G), ps = gedacktPipe (60, ga);
+        Derived da, ds;
+        derive (pa.data(), FS, da);
+        derive (ps.data(), FS, ds);
+        check (std::abs (da.M - ds.M) < 1e-12 && std::abs (da.Leff - ds.Leff) < 1e-12, "the arch keeps the mouth's area and end correction");
+    }
+    // (g) the rectangular bore's wall loss: 2 S / P, x 1.27 for wood
+    {
+        ParamVec p = gedacktPipe (48, G);
+        Derived dv;
+        derive (p.data(), FS, dv);
+        const double aEff = p[P_MOUTHW] * p[P_DEPTH] / (p[P_MOUTHW] + p[P_DEPTH]), aEq = 0.5 * p[P_D];
+        std::printf ("  c (130.8 Hz): %.1f x %.1f mm, loss radius 2S/P %.2f mm vs equal-area %.2f mm (x%.3f the round pipe's loss), loss %.2f\n",
+                     p[P_MOUTHW] * 1e3, p[P_DEPTH] * 1e3, aEff * 1e3, aEq * 1e3, aEq / aEff, p[P_LOSS]);
+        check (std::abs (aEq / aEff - (std::sqrt (1.25) + 1.0 / std::sqrt (1.25)) / std::sqrt (kPi)) < 1e-9, "rectangular wall loss: (sqrt e + 1/sqrt e) / sqrt pi of the round pipe (Rucz et al.)");
+    }
+    // (g2) a stopped top radiates nothing: the voice's output (L + R = 1.2 (mouth + top)) is the mouth alone
+    {
+        const ParamVec p = gedacktPipe (60, G);
+        const int n = (int) (2.0 * FS);
+        Voice v;
+        v.jetJitter = Engine::kJetJitter;
+        v.servoEnabled = false;
+        v.prepare (FS, 3);
+        v.start (p, 0.0);
+        std::vector<double> mouth ((size_t) n), L ((size_t) n), R ((size_t) n);
+        for (int i = 0; i < n; i += 4096) { const int m = std::min (4096, n - i); v.render (m, L.data() + i, R.data() + i, mouth.data() + i); }
+        double et = 0, em = 0;
+        for (int i = n / 2; i < n; ++i)
+        {
+            const double top = (L[(size_t) i] + R[(size_t) i]) / 1.2 - mouth[(size_t) i];
+            et += top * top; em += mouth[(size_t) i] * mouth[(size_t) i];
+        }
+        std::printf ("  c1 stopped: the top radiates %.1f dB re the mouth\n", 10 * std::log10 (et / em + 1e-30));
+        check (et < 1e-6 * em, "a stopped top radiates nothing (the pipe's lumped losses are not a flow through the stopper)");
+    }
+    // (h) another stop drawn while a key is held: the old pipe dies away, the key speaks on the new stop
+    {
+        Engine e;
+        e.prepare (48000, 480);
+        Globals gp = stopGlobals (STOP_PRINZIPAL);
+        gp.reverb = 0;
+        e.setGlobals (gp);
+        std::vector<float> L (480), R (480);
+        e.noteOn (60, 60, 100);
+        for (int b = 0; b < 50; ++b) e.process (L.data(), R.data(), 480);
+        Globals gg = G;
+        gg.reverb = 0;
+        e.setGlobals (gg);
+        int newStop = -1, frozenAt = -1;
+        for (int b = 0; b < 100; ++b)
+        {
+            e.process (L.data(), R.data(), 480);
+            int frozen = 0;
+            for (int i = 0; i < Engine::kMaxVoices; ++i)
+            {
+                const Voice& v = e.voice (i);
+                if (v.active && v.id == 60) newStop = v.stop;
+                if (v.active && v.frozen) ++frozen;
+            }
+            if (frozen == 0 && frozenAt < 0) frozenAt = b;
+        }
+        std::printf ("  stop change with c1 held: the key now on stop %d; the Prinzipal's pipe gone after %d ms\n", newStop, frozenAt * 10);
+        check (newStop == STOP_GEDACKT && frozenAt >= 0 && frozenAt < 80, "stop change: the held key speaks on the new stop, the old pipe dies away");
+        // what the screens show of it: the pitch against the key (the Gedackt's key is its stopped fundamental)
+        for (int b = 0; b < 150; ++b) e.process (L.data(), R.data(), 480);
+        Telemetry t;
+        e.fillTelemetry (t);
+        std::printf ("  its telemetry: %.2f Hz, regime x%.1f of the open resonance, %+.2f cents against the key\n", t.fMeas, t.ratio, t.cents);
+        check (std::abs (t.ratio - 0.5f) < 0.01f && std::abs (t.cents) < 10.0f, "the screens' pitch: the Gedackt on its key (not an octave off)");
+    }
+    // (i) the wooden box struck (MALLET): plate modes of the front board, contact, decay, the air column it drives
+    {
+        for (int k : { 36, 60, 84 })
+        {
+            const ParamVec p = gedacktPipe (k, G);
+            Voice v;
+            v.prepare (96000, 3);
+            v.setHostRate (48000);
+            ParamVec pm = p;
+            pm[P_EXCITE] = 1.0; pm[P_GATE] = 0.0;
+            v.start (pm, 0.0);
+            v.strike (1.0);
+            const MalletModel& md = v.malletModel();
+            // the (1, 1) mode against Leissa's formula for the board
+            const WoodProps& wd = woodProps (0);
+            const double b = p[P_MOUTHW], Lb = p[P_LPHYS], h = woodWallThickness (b);
+            const double ET = wd.ETL * wd.EL, nuTL = wd.nuLT * ET / wd.EL, den = 12.0 * (1.0 - wd.nuLT * nuTL);
+            const double d11 = wd.EL * h * h * h / den, d22 = ET * h * h * h / den, d12 = wd.nuLT * d22, d66 = wd.GLTL * wd.EL * h * h * h / 12.0;
+            auto fmn = [&] (int m, int n) { const double x = m / Lb, y = n / b; return kPi / 2.0 * std::sqrt ((d11 * x * x * x * x + 2 * (d12 + 2 * d66) * x * x * y * y + d22 * y * y * y * y) / (wd.rho * h)); };
+            double f11 = -1;
+            for (int i = 0; i < md.modeCount(); ++i) if (md.modeN (i) == 1 && md.modeM (i) == 1) f11 = md.modeFreq (i);
+            std::vector<double> L (48000), R (48000), hm (24000), hs (24000);
+            std::vector<double> mixL (96000), mixR (96000);
+            double pk = 0, e0 = 0, e1 = 0;
+            bool fin = true;
+            for (int blk = 0; blk < 4; ++blk)
+            {
+                std::fill (hm.begin(), hm.end(), 0.0);
+                std::fill (mixL.begin(), mixL.end(), 0.0);
+                v.render (48000, mixL.data(), mixR.data(), nullptr, hm.data(), nullptr);
+                for (int i = 0; i < 24000; ++i)
+                {
+                    const double y = hm[(size_t) i] + 0.5 * (mixL[(size_t) (2 * i)] + mixL[(size_t) (2 * i + 1)]);
+                    fin = fin && std::isfinite (y);
+                    pk = std::max (pk, std::abs (y));
+                    if (blk == 0 && i < 12000) e0 += y * y;
+                    if (blk == 3) e1 += y * y;
+                }
+            }
+            std::printf ("  struck %d (oak, board %.1f mm wide, %.1f mm thick): %d modes, f(1,1) %.0f Hz (Leissa %.0f), contact %.3f ms, peak %.2f Pa, 1.5-2 s vs 0-0.25 s %.1f dB\n",
+                         k, b * 1e3, h * 1e3, md.modeCount(), f11, fmn (1, 1), md.lastContactTime() * 1e3, pk, 10 * std::log10 ((e1 / 24000.0) / std::max (1e-30, e0 / 12000.0)));
+            check (fin && pk > 1e-3 && pk < 1e3, "struck wooden box: finite, it sounds");
+            check (f11 < 0 || std::abs (f11 / fmn (1, 1) - 1.0) < 1e-6, "the board's (1,1) mode = Leissa's simply supported orthotropic plate");
+            check (e1 < e0, "struck wooden box: it dies away");
+        }
+    }
+}
+
+/* V2: the Gedackt's pitch-lock calibration table (labium_check kcalgen): the factor that puts the locked, servo-free pipe
+   on its key, iterated twice; printed as src/dsp/KcalTableGedackt.inc */
+void kcalGen()
+{
+    const Globals G0 = stopGlobals (STOP_GEDACKT);
+    std::printf ("// V2: the Gedackt 8' pitch-lock calibration (labium_check kcalgen: pitch lock 100 %%, servo off, the engine's jet jitter)\n");
+    std::printf ("static constexpr int kKcalGFirst = 24, kKcalGCount = 73;\nstatic constexpr double kKcalG[kKcalGCount] = {\n");
+    for (int k = 24; k <= 96; ++k)
+    {
+        // (v2.0: until it is within 0.1 cent, at most 8 times: with Dickson's wide scale the mouth's lumped mass is up to
+        // half of the quarter wave, and the pitch follows the stopper less than in proportion)
+        double kc = 1.0;
+        for (int it = 0; it < 8; ++it)
+        {
+            Globals g = G0;
+            g.pitchLock = 1.0;
+            ParamVec p = gedacktPipe (k, g);
+            p[P_KCAL] = kc;
+            p[P_FDESIGN] = p[P_FTARGET] / kc;          // (the cut-up voiced for the stopper being tried: baseParams)
+            const double dur = k < 40 ? 5.0 : 2.6, win = k < 40 ? 3.0 : 1.0;      // (the 16' octave: as a tuner hears it, 2-5 s)
+            const auto m = renderCpp (p, dur, FS, false, -1, nullptr, 0.0, Engine::kJetJitter);
+            double cand = 0, f = 0;
+            const size_t i0 = (size_t) ((dur - win) * FS);
+            pitchError (m.data() + i0, m.size() - i0, FS, p[P_FTARGET], &cand, &f);
+            if (! (cand > 0 && f > 0)) break;
+            const double r = f / (cand * p[P_FTARGET]);
+            kc *= r;
+            if (std::abs (1200.0 * std::log2 (r)) < 0.1) break;
+        }
+        std::printf ("    %.6f,  // %d\n", kc, k);
+    }
+    std::printf ("};\n");
+}
+
+/* ================================================================ 12. v2.0: tuning */
+/* temperaments from their circles of fifths, Scala files (tuning-library), the engine playing the tuned pipes */
+void testTuning()
+{
+    std::printf ("\n== 12. tuning (v2.0): equal at 440 Hz moves nothing, the temperaments, Pitch a1, Scala .scl / .kbm, the tuned pipes ==\n");
+    const CustomTuning none;
+    // (a) equal temperament at 440 Hz: every key its own pipe, nothing cut (the sound of 2.0 without tuning, bit for bit)
+    {
+        Globals g;
+        int bad = 0;
+        for (int m = 0; m < 128; ++m)
+        {
+            double s = -1.0, rest = -1.0;
+            const bool on = keyTuning (g, none, m, s);
+            const int k = pipeKeyFor (m, s, rest);
+            if (! on || s != 0.0 || k != m || rest != 0.0) ++bad;
+        }
+        check (bad == 0, "equal temperament, a1 = 440 Hz: every key exactly its own pipe (0.0 semitones)");
+    }
+    // (b) Werckmeister III against Barbour's table (cents from C), a1 on the pitch
+    {
+        const double ref[12] { 0, -9.775, -7.820, -5.865, -9.775, -1.955, -11.730, -3.910, -7.820, -11.730, -3.910, -7.820 };
+        double worst = 0;
+        for (int pc = 0; pc < 12; ++pc)
+            worst = std::max (worst, std::abs (temperamentCents (TEMP_WERCKMEISTER3, pc) - temperamentCents (TEMP_WERCKMEISTER3, 0) - ref[pc]));
+        std::printf ("  Werckmeister III: C %+.2f, E %+.2f, F# %+.2f, A %+.2f cents from equal (a1 kept); worst against the table %.4f\n",
+                     temperamentCents (TEMP_WERCKMEISTER3, 0), temperamentCents (TEMP_WERCKMEISTER3, 4), temperamentCents (TEMP_WERCKMEISTER3, 6),
+                     temperamentCents (TEMP_WERCKMEISTER3, 9), worst);
+        check (worst < 0.01 && temperamentCents (TEMP_WERCKMEISTER3, 9) == 0.0, "Werckmeister III: Barbour's departures from equal temperament, a1 unmoved");
+    }
+    // (c) what each circle promises: pure thirds of meantone and Kirnberger III, pure fifths of Pythagorean, Young's 1/6-comma fifth
+    {
+        auto iv = [] (int t, int lo, int hi, int semis) { return 100.0 * semis + temperamentCents (t, hi) - temperamentCents (t, lo); };
+        const double third = 1200.0 * std::log2 (1.25), fifth = 1200.0 * std::log2 (1.5), pc = 1200.0 * std::log2 (531441.0 / 524288.0);
+        const double mt = iv (TEMP_MEANTONE, 0, 4, 4), k3 = iv (TEMP_KIRNBERGER3, 0, 4, 4), py = iv (TEMP_PYTHAGOREAN, 0, 7, 7);
+        const double yo = iv (TEMP_YOUNG, 0, 7, 7), va = iv (TEMP_VALLOTTI, 11, 6, 7);
+        std::printf ("  C-E: meantone %.3f, Kirnberger III %.3f (5:4 = %.3f); C-G: Pythagorean %.3f, Young %.3f; B-F#: Vallotti %.3f cents\n",
+                     mt, k3, third, py, yo, va);
+        check (std::abs (mt - third) < 1e-9 && std::abs (k3 - third) < 1e-9 && std::abs (py - fifth) < 1e-9 && std::abs (yo - (fifth - pc / 6.0)) < 1e-9
+                   && std::abs (va - fifth) < 1e-9,
+               "the circles of fifths: meantone and Kirnberger III with a pure C-E, Pythagorean C-G pure, Young's C-G 1/6 comma narrow, Vallotti's B-F# pure");
+    }
+    // (d) Pitch a1: a1 sounds at the knob in every temperament
+    {
+        Globals g;
+        g.temperament = TEMP_WERCKMEISTER3;
+        g.pitchA = 415.0;
+        double s = 0;
+        keyTuning (g, none, 69, s);
+        std::printf ("  Werckmeister III at a1 = 415 Hz: a1 %.4f Hz\n", midiToHz (69) * std::exp2 (s / 12.0));
+        check (std::abs (midiToHz (69) * std::exp2 (s / 12.0) - 415.0) < 1e-9, "Pitch a1: a1 on the knob");
+    }
+    // (e) a Scala scale (five equal steps of 240 cents, written here) without a .kbm: 1/1 on c1, a1 on the pitch; a .kbm leaving c#1 out
+    const std::string scl5 = "! five.scl\n!\nFive equal steps of 240 cents (labium_check)\n 5\n!\n 240.0\n 480.0\n 720.0\n 960.0\n 2/1\n";
+    const std::string kbmX = "! no c#1\n 12\n 0\n 127\n 60\n 69\n 440.0\n 12\n! keys\n 0\n x\n 2\n 3\n 4\n 5\n 6\n 7\n 8\n 9\n 10\n 11\n";
+    CustomTuning five, gap;
+    {
+        TuningInfo info;
+        const bool ok = buildCustomTuning (scl5, "", five, info);
+        std::printf ("  five.scl: %s, \"%s\", %d notes; c1 %+.4f, a1 %+.4f, a#1 %+.4f semitones from equal\n", ok ? "read" : info.error.c_str(),
+                     info.description.c_str(), info.notes, five.semis[60], five.semis[69], five.semis[70]);
+        check (ok && info.notes == 5 && five.usesPitch && std::abs (five.semis[69]) < 1e-9 && std::abs (five.semis[70] - 1.4) < 1e-9
+                   && std::abs (five.semis[60] + 12.6) < 1e-9,
+               "a .scl without a .kbm: 1/1 on c1, a1 at 440 Hz (a#1 = a1 + 240 cents: +1.4 semitones)");
+        TuningInfo info2;
+        const bool ok2 = buildCustomTuning ("", kbmX, gap, info2);
+        std::printf ("  no-c#1.kbm alone: %s; c1 %s, c#1 %s, d1 %s (%+.4f)\n", ok2 ? "read" : info2.error.c_str(), gap.mapped[60] ? "mapped" : "out",
+                     gap.mapped[61] ? "mapped" : "out", gap.mapped[62] ? "mapped" : "out", gap.semis[62]);
+        check (ok2 && ! gap.usesPitch && ! gap.mapped[61] && gap.mapped[60] && gap.mapped[62] && std::abs (gap.semis[62]) < 1e-9,
+               "a .kbm alone (equal scale): the key it leaves out is unmapped, the others where they were");
+        CustomTuning keep = five;
+        TuningInfo bad;
+        const bool okBad = buildCustomTuning ("! bad\nnot a scale\n 3\n 100.0\n", "", keep, bad);
+        std::printf ("  a broken .scl: %s\n", okBad ? "accepted" : bad.error.c_str());
+        check (! okBad && ! bad.error.empty() && keep.valid && keep.semis[70] == five.semis[70], "a broken .scl is refused with a reason, the tuning stays");
+    }
+    // (f) the engine: Werckmeister III with pitch lock on the tuned pitch; the five-step scale on other keys' pipes; a left-out key silent
+    {
+        Engine e;
+        e.prepare (48000, 480);
+        Globals g;
+        g.reverb = 0;
+        g.temperament = TEMP_WERCKMEISTER3;
+        g.pitchLock = 1.0;
+        e.setGlobals (g);
+        std::vector<float> L (480), R (480);
+        e.noteOn (64, 64, 100);
+        for (int b = 0; b < 200; ++b) e.process (L.data(), R.data(), 480);
+        Telemetry t;
+        e.fillTelemetry (t);
+        const double want = midiToHz (64) * std::exp2 (temperamentCents (TEMP_WERCKMEISTER3, 4) / 1200.0);
+        std::printf ("  Werckmeister III, e1, pitch lock 100 %%: target %.3f Hz (table %.3f), sounding %.3f Hz, %+.2f cents\n", t.fTarget, want, t.fMeas, t.cents);
+        check (std::abs (t.fTarget - want) < 1e-3 && std::abs (t.cents) < 3.0, "a tempered key: its pipe on the tempered pitch (pitch lock)");
+        e.noteOff (64);
+        for (int b = 0; b < 300; ++b) e.process (L.data(), R.data(), 480);
+        g.temperament = TEMP_CUSTOM;
+        e.setGlobals (g);
+        e.setCustomTuning (five);
+        e.noteOn (70, 70, 100);
+        for (int b = 0; b < 20; ++b) e.process (L.data(), R.data(), 480);
+        int pipe = -1;
+        for (int i = 0; i < Engine::kMaxVoices; ++i)
+            if (e.voice (i).active && e.voice (i).id == 70) pipe = e.voice (i).pipeKey;
+        e.fillTelemetry (t);
+        std::printf ("  five.scl, a#1: sounds the pipe of key %d, target %.3f Hz (a1 + 240 cents: %.3f)\n", pipe, t.fTarget, 440.0 * std::exp2 (0.2));
+        check (pipe == 71 && std::abs (t.fTarget - 440.0 * std::exp2 (0.2)) < 1e-3, "a key 1.4 semitones up: the pipe of the nearest key (h1), cut 0.4 semitones shorter");
+        e.noteOff (70);
+        e.setCustomTuning (gap);
+        e.noteOn (61, 61, 100);
+        int sounding = 0;
+        for (int i = 0; i < Engine::kMaxVoices; ++i) if (e.voice (i).active && e.voice (i).id == 61) ++sounding;
+        check (sounding == 0, "a key the .kbm leaves out has no pipe");
     }
 }
 
@@ -2212,6 +2679,1025 @@ int main (int argc, char** argv)
         traceState (argv[2], std::atoi (argv[3]));
         return 0;
     }
+    if (what == "kcalgen")
+    {
+        kcalGen();
+        return 0;
+    }
+    if (what == "gsustain")
+    {
+        // does the Gedackt hold its tone? level at 1-2 s and 7-8 s (as built; argv[2] cut-up factor, argv[3] wind factor)
+        const double cut = argc > 2 ? std::atof (argv[2]) : 1.0, wind = argc > 3 ? std::atof (argv[3]) : 1.0;
+        const int prin = argc > 4 ? std::atoi (argv[4]) : 0;
+        for (int k = 24; k <= 60; k += 2)
+        {
+            Globals g = stopGlobals (prin ? STOP_PRINZIPAL : STOP_GEDACKT);
+            g.cutup = cut; g.bellows = wind;
+            ParamVec p;
+            voiceParams (k, g, VoiceOverride {}, prin ? designPrinzipal (k) : designGedackt (k), p);
+            const auto m = renderCpp (p, 8.0, FS, false, -1, nullptr, 0.0, Engine::kJetJitter);
+            auto lev = [&] (double a, double b) { double e = 0; for (size_t i = (size_t) (a * FS); i < (size_t) (b * FS); ++i) e += m[i] * m[i]; return 10 * std::log10 (e / ((b - a) * FS) / 4e-10); };
+            std::printf ("  %d: %.1f dB -> %.1f dB\n", k, lev (1, 2), lev (7, 8));
+        }
+        return 0;
+    }
+    if (what == "mal07")
+    {
+        // the host test's renders 06 and 07 on the engine: a zinc chord struck with brass, then common metal with rubber on the
+        // same keys. Twice, the second time on memory filled with junk first: an uninitialised read shows as a difference
+        auto run = [] (bool junk) {
+            if (junk)
+            {
+                std::vector<std::unique_ptr<std::vector<double>>> js;
+                for (int i = 0; i < 64; ++i) js.push_back (std::make_unique<std::vector<double>> ((size_t) 1 << 16, 1.2345e300 * (i + 1)));
+                for (int i = 0; i < 64; ++i) { auto* p = new char[(size_t) 1 << 20]; std::memset (p, 0x7f, (size_t) 1 << 20); delete[] p; }
+            }
+            auto e = std::make_unique<Engine>();
+            e->prepare (48000, 512);
+            Globals G;
+            G.excite = 1; G.metal = 3; G.head = 3;
+            e->setGlobals (G);
+            std::vector<float> L (512), R (512);
+            uint64_t h = 1469598103934665603ull;
+            auto blocks = [&] (double sec, auto&& at) {
+                const int nb = (int) std::lround (sec * 48000 / 512);
+                for (int b = 0; b < nb; ++b)
+                {
+                    at (b);
+                    e->process (L.data(), R.data(), 512);
+                    for (int i = 0; i < 512; ++i) { uint32_t u; std::memcpy (&u, &L[(size_t) i], 4); h = (h ^ u) * 1099511628211ull; }
+                }
+            };
+            blocks (4.0, [&] (int b) { if (b == 9) for (int k : { 48, 55, 64, 72 }) e->noteOn (k, k, 110); });
+            const uint64_t h06 = h;
+            G.metal = 0; G.head = 0;
+            e->setGlobals (G);
+            blocks (0.5, [&] (int b) { if (b == 0) e->allOff (false); });
+            blocks (4.0, [&] (int b) { if (b == 9) for (int k : { 48, 55, 64, 72 }) e->noteOn (100 + k, k, 110); });
+            std::printf ("  %s: chord 1 %016llx, both %016llx\n", junk ? "junk first" : "clean     ", (unsigned long long) h06, (unsigned long long) h);
+        };
+        run (false);
+        run (true);
+        run (false);
+        return 0;
+    }
+    if (what == "gtone")
+    {
+        // the Gedackt as built at a few keys (pitch lock off): pitch, level, partials (with Arched cut-up up: Voice::kStrips)
+        std::printf ("  %d strips\n  key    f [Hz]  cents  level |   H2    H3    H4    H5    H6    H7\n", OKL_STRIPS);
+        const Globals g = stopGlobals (STOP_GEDACKT);
+        for (int k : { 24, 36, 48, 60, 72, 84, 96 })
+        {
+            const ParamVec p = gedacktPipe (k, g);
+            const double dur = k < 40 ? 4.0 : 2.6;
+            const Metrics m = gedacktTone (p, dur, dur - 1.0);
+            char nm[8];
+            organName (k, nm);
+            std::printf ("  %-5s %8.2f %+6.2f  %5.1f | %5.1f %5.1f %5.1f %5.1f %5.1f %5.1f\n", nm, m.f, cents (m.f, p[P_FTARGET]), m.db,
+                         m.hm[1], m.hm[2], m.hm[3], m.hm[4], m.hm[5], m.hm[6]);
+        }
+        return 0;
+    }
+    if (what == "gopen")
+    {
+        // the stopper drawn (Open/Stopped 0 %) with the cut-up following the pitch (Cut-up follow 100 %, as built) or the
+        // mouth left as cut (0 %)
+        std::printf ("  key   follow   f [Hz]  x stopped  regime  level |   H2    H3\n");
+        for (int k : { 36, 48, 60, 72, 84 })
+            for (double fo : { 1.0, 0.0 })
+            {
+                Globals g = stopGlobals (STOP_GEDACKT);
+                g.morph = 0.0; g.vFollow = fo;
+                const ParamVec p = gedacktPipe (k, g);
+                const Metrics m = gedacktTone (p, 2.6, 1.6);
+                char nm[8];
+                organName (k, nm);
+                std::printf ("  %-5s %4.0f %%  %8.2f  %7.3f  %6.2f  %5.1f | %5.1f %5.1f\n", nm, fo * 100, m.f, m.f / midiToHz (k), m.regime, m.db, m.hm[1], m.hm[2]);
+            }
+        return 0;
+    }
+    if (what == "gcpu")
+    {
+        // where the Gedackt's time goes: n voices (argv[2], default 8) with the arched cut-up at 100 %, as built (straight),
+        // the Prinzipal (the least of 3 runs of 3 s each; argv[3] = 0: without the jet's jitter)
+        const int n = argc > 2 ? std::atoi (argv[2]) : 8;
+        const double jit = argc > 3 ? std::atof (argv[3]) : Engine::kJetJitter;
+        Globals g = stopGlobals (STOP_GEDACKT), gs = g;
+        g.arch = 1.0;
+        if (n == 0)
+        {
+            // one voice per key: where is it dear?
+            for (int k = 24; k <= 96; k += 4)
+            {
+                double a = 1e9, b = 1e9, c = 1e9;
+                for (int rep = 0; rep < 2; ++rep)
+                {
+                    a = std::min (a, cpuLoad (g, 1, false, 1.5, jit, k));
+                    b = std::min (b, cpuLoad (gs, 1, false, 1.5, jit, k));
+                    c = std::min (c, cpuLoad (Globals(), 1, false, 1.5, jit, k));
+                }
+                std::printf ("  key %d: Gedackt arched %.2f %%, as built %.2f %%, Prinzipal %.2f %%\n", k, a, b, c);
+            }
+            return 0;
+        }
+        double a = 1e9, b = 1e9, c = 1e9;
+        for (int rep = 0; rep < 3; ++rep)
+        {
+            a = std::min (a, cpuLoad (g, n, false, 3.0, jit));
+            b = std::min (b, cpuLoad (gs, n, false, 3.0, jit));
+            c = std::min (c, cpuLoad (Globals(), n, false, 3.0, jit));
+        }
+        std::printf ("  %d voices (jitter %.2f): Gedackt arched %.1f %%, as built %.1f %%, Prinzipal %.1f %% of one core (least of 3)\n", n, jit, a, b, c);
+        return 0;
+    }
+    if (what == "gpitch" && argc > 2)
+    {
+        // a Gedackt key held 12 s (pitch lock 100 %, servo off, kcal 1): pitch and level in 1 s windows
+        const int k = std::atoi (argv[2]);
+        const double dur = argc > 3 ? std::atof (argv[3]) : 12.0;
+        Globals g = stopGlobals (STOP_GEDACKT);
+        g.pitchLock = 1.0;
+        if (argc > 4) g.cutup = std::atof (argv[4]);
+        ParamVec p = gedacktPipe (k, g);
+        p[P_KCAL] = 1.0;
+        const auto m = renderCpp (p, dur, FS, false, -1, nullptr, 0.0, Engine::kJetJitter);
+        for (int s = 1; s < (int) dur; s += std::max (1, (int) dur / 12))
+        {
+            double cand = 0, f = 0, e = 0;
+            const size_t i0 = (size_t) (s * FS);
+            const double c = pitchError (m.data() + i0, (size_t) FS, FS, p[P_FTARGET], &cand, &f);
+            for (size_t i = i0; i < i0 + (size_t) FS; ++i) e += m[i] * m[i];
+            std::printf ("  %2d s: %.3f Hz  %+.1f c (x%.1f)  %.1f dB\n", s, f, c, cand, 10 * std::log10 (e / FS / 4e-10));
+        }
+        return 0;
+    }
+    if (what == "gscan")
+    {
+        // v2.0 diagnostic: the Gedackt as built at every third key (pitch lock off; argv[2]: pitch lock): pitch, regime,
+        // level, partials 2..7
+        Globals g = stopGlobals (STOP_GEDACKT);
+        if (argc > 2) g.pitchLock = std::atof (argv[2]);
+        std::printf ("  key    f [Hz]  cents  regime level |   H2    H3    H4    H5    H6    H7   (M/Leff)\n");
+        for (int k = 24; k <= 96; k += 3)
+        {
+            const ParamVec p = gedacktPipe (k, g);
+            const double dur = k < 40 ? 4.0 : 2.6;
+            const Metrics m = gedacktTone (p, dur, dur - 1.0);
+            const PipeDesign d = designGedackt (k);
+            char nm[8];
+            organName (k, nm);
+            std::printf ("  %-5s %8.2f %+6.1f  %5.2f  %5.1f | %5.1f %5.1f %5.1f %5.1f %5.1f %5.1f   %.3f\n", nm, m.f,
+                         std::isfinite (m.f) ? cents (m.f, p[P_FTARGET]) : 999.0, m.regime, m.db,
+                         m.hm[1], m.hm[2], m.hm[3], m.hm[4], m.hm[5], m.hm[6], d.M / d.Leff);
+        }
+        return 0;
+    }
+    if (what == "gsrc")
+    {
+        // v2.0 diagnostic: where the partials come from. Q: the flow into the pipe over one period (the jet's source), dB re its
+        // fundamental; T: Fletcher & Douglas's source 1 + tanh (a sin wt / b) for the swing a measured at the fundamental
+        // (lip on the jet); O: the output's partials; R = O - Q - 40 log n: what the pipe's resonances add (the drive is
+        // d/dt of the flow, the radiation d/dt of the mouth flow: n^2)
+        auto dftDb = [] (const std::vector<double>& x, int nh, std::vector<double>& out) {
+            const int N = (int) x.size();
+            std::vector<double> a ((size_t) nh + 1);
+            for (int h = 1; h <= nh; ++h)
+            {
+                double re = 0, im = 0;
+                for (int i = 0; i < N; ++i) { re += x[(size_t) i] * std::cos (kTwoPi * h * i / N); im += x[(size_t) i] * std::sin (kTwoPi * h * i / N); }
+                a[(size_t) h] = std::sqrt (re * re + im * im) * 2.0 / N;
+            }
+            out.assign ((size_t) nh + 1, 0.0);
+            for (int h = 1; h <= nh; ++h) out[(size_t) h] = 20 * std::log10 (std::max (1e-12, a[(size_t) h] / a[1]));
+            return a[1];
+        };
+        for (int k : { 36, 48, 60, 72, 84 })
+            for (int vr = 0; vr < 2; ++vr)
+            {
+                Globals g = vr == 1 ? Globals() : stopGlobals (STOP_GEDACKT);
+                ParamVec p;
+                voiceParams (k, g, VoiceOverride {}, vr == 1 ? designPrinzipal (k) : designGedackt (k), p);
+                Voice v;
+                v.jetJitter = Engine::kJetJitter;
+                v.servoEnabled = false;
+                v.prepare (FS, 3);
+                v.start (p, 0.0);
+                const int n = (int) (3.0 * FS);
+                std::vector<double> mouth ((size_t) n), L ((size_t) n), R ((size_t) n), out ((size_t) n);
+                for (int i = 0; i < n; i += 4096) { const int m = std::min (4096, n - i); v.render (m, L.data() + i, R.data() + i, mouth.data() + i); }
+                for (int i = 0; i < n; ++i) out[(size_t) i] = L[(size_t) i] + R[(size_t) i];
+                const Metrics mo = analyze (out, FS, p[P_FTARGET], 1.5);
+                v.requestCapture (FS / mo.f);
+                std::vector<double> sk (8192), skL (8192), skR (8192);
+                for (int it = 0; it < 40 && ! v.captureReady(); ++it) v.render (1024, skL.data(), skR.data(), sk.data());
+                if (! v.captureReady()) continue;
+                const PeriodCapture& c = v.capture();
+                std::vector<double> q (K_SNAP), e (K_SNAP), Q, E;
+                for (int i = 0; i < K_SNAP; ++i) { q[(size_t) i] = c.inflow[i]; e[(size_t) i] = c.eta[i]; }
+                dftDb (q, 7, Q);
+                const double a1 = dftDb (e, 7, E);
+                std::vector<double> th (256), T;
+                for (int i = 0; i < 256; ++i) th[(size_t) i] = 1.0 + std::tanh (a1 * std::sin (kTwoPi * i / 256.0));
+                dftDb (th, 7, T);
+                char nm[8];
+                organName (k, nm);
+                std::printf ("  %-4s %-9s swing a1 = %.2f b\n", nm, vr == 1 ? "Prinzipal" : "Gedackt", a1);
+                std::printf ("        n:      2      3      4      5      6      7\n");
+                std::printf ("    Q source "); for (int h = 2; h <= 7; ++h) std::printf (" %6.1f", Q[(size_t) h]); std::printf ("\n");
+                std::printf ("    T theory "); for (int h = 2; h <= 7; ++h) std::printf (" %6.1f", T[(size_t) h]); std::printf ("\n");
+                std::printf ("    O output "); for (int h = 2; h <= 7; ++h) std::printf (" %6.1f", mo.hm[h - 1]); std::printf ("\n");
+                std::printf ("    R pipe   "); for (int h = 2; h <= 7; ++h) std::printf (" %6.1f", mo.hm[h - 1] - Q[(size_t) h] - 40 * std::log10 ((double) h)); std::printf ("\n");
+            }
+        return 0;
+    }
+    if (what == "gcut")
+    {
+        // v2.0 diagnostic: the Gedackt with Janke's cut-up rule (as built) and with Dickson's own, a third of the mouth's
+        // width (argv[2]: wall-loss factor on top of the wood's, default 1): cut-up, Ising, the jet's swing at the lip
+        // (fundamental of eta, in b), pitch, level, partials
+        const double lossX = argc > 2 ? std::atof (argv[2]) : 1.0;
+        std::printf ("  key  rule    cut [mm]  H/W  Ising  swing/b  cents  regime level |   H2    H3    H4    H5    H6    H7\n");
+        for (int k : { 24, 30, 36, 42, 48, 60, 72, 84, 96 })
+            for (int vr = 0; vr < 4; ++vr)
+            {
+                const PipeDesign d = designGedackt (k);
+                Globals g = stopGlobals (STOP_GEDACKT);
+                g.loss *= lossX;
+                if (vr == 1) g.cutup = d.mouthW / 3.0 / d.cutup;
+                if (vr == 2) g.arch = 1.0;     // Janke's height, arched (Klais's Gedackt 8')
+                if (vr == 3) g.y0b = 0.5;      // the lip off the jet's centre as before v2.0's y0b = 0
+                const ParamVec p = gedacktPipe (k, g);
+                Voice v;
+                v.jetJitter = Engine::kJetJitter;
+                v.servoEnabled = false;
+                v.prepare (FS, 3);
+                v.start (p, 0.0);
+                const double dur = k < 40 ? 4.0 : 2.6;
+                const int n = (int) (dur * FS);
+                std::vector<double> mouth ((size_t) n), L ((size_t) n), R ((size_t) n), out ((size_t) n);
+                for (int i = 0; i < n; i += 4096) { const int m = std::min (4096, n - i); v.render (m, L.data() + i, R.data() + i, mouth.data() + i); }
+                for (int i = 0; i < n; ++i) out[(size_t) i] = L[(size_t) i] + R[(size_t) i];
+                const Metrics mo = analyze (out, FS, p[P_FTARGET], dur - 1.0);
+                double a1 = 0.0;
+                if (std::isfinite (mo.f) && mo.f > 0)
+                {
+                    v.requestCapture (FS / mo.f);
+                    std::vector<double> sk (8192), skL (8192), skR (8192);
+                    for (int it = 0; it < 40 && ! v.captureReady(); ++it) v.render (1024, skL.data(), skR.data(), sk.data());
+                    if (v.captureReady())
+                    {
+                        const PeriodCapture& c = v.capture();
+                        double re = 0, im = 0;
+                        for (int i = 0; i < K_SNAP; ++i) { re += c.eta[i] * std::cos (kTwoPi * i / K_SNAP); im += c.eta[i] * std::sin (kTwoPi * i / K_SNAP); }
+                        a1 = std::sqrt (re * re + im * im) * 2.0 / K_SNAP;
+                    }
+                }
+                const double cf = vr == 1 ? g.cutup : 1.0;
+                char nm[8];
+                organName (k, nm);
+                std::printf ("  %-4s %-7s  %6.1f  %4.2f  %5.2f  %6.2f  %+6.1f  %5.2f  %5.1f | %5.1f %5.1f %5.1f %5.1f %5.1f %5.1f\n", nm,
+                             vr == 1 ? "Dickson" : vr == 2 ? "arched" : vr == 3 ? "y0 0.5b" : "Janke", d.cutup * cf * 1e3, d.cutup * cf / d.mouthW, d.ising * std::pow (cf, -1.5), a1,
+                             std::isfinite (mo.f) ? cents (mo.f, p[P_FTARGET]) : 999.0, mo.regime, mo.db,
+                             mo.hm[1], mo.hm[2], mo.hm[3], mo.hm[4], mo.hm[5], mo.hm[6]);
+            }
+        return 0;
+    }
+    if (what == "gfitkey" && argc > 3)
+    {
+        // v2.0 diagnostic: per key (argv[2]..argv[3]) the factor (x Janke's rule) whose pipe, as the plugin builds it (no
+        // ears, cut-up follow from its built resonance) and with its stopper set to its key, has the level B the user heard:
+        // the distributed Gedackt (ears 100 %, its stopper table: give the old table's file in argv[4]) with the Cut-up
+        // knob at the user's first factors (1.50 g..f#1, 1.67 g1..f#2, 1.71 g2..g3, 1.58 g#3..c4). Regula falsi on the
+        // level, each try tuned (kcal from the last try, by steps of the measured cents)
+        std::vector<double> kOld;
+        if (argc > 4)
+        {
+            std::FILE* f = std::fopen (argv[4], "r");
+            char line[256];
+            while (f && std::fgets (line, sizeof line, f)) { double x; int key; if (std::sscanf (line, " %lf, // %d", &x, &key) == 2) kOld.push_back (x); }
+            if (f) std::fclose (f);
+        }
+        if (kOld.size() != 73) { std::printf ("  the old stopper table (73 factors) is needed in argv[4]\n"); return 1; }
+        auto knob = [] (int k) { return k <= 54 ? 1.00 : k <= 66 ? 1.50 : k <= 78 ? 1.67 : k <= 91 ? 1.71 : 1.58; };
+        std::printf ("  key  B dB   factor  kcal     cents   dB    (tries)\n");
+        for (int k = std::atoi (argv[2]); k <= std::atoi (argv[3]); ++k)
+        {
+            const double dur = k < 40 ? 4.0 : 2.6;
+            double B;
+            {
+                PipeDesign d = designGedackt (k);
+                d.cutup /= gedacktCutVoicing (k);
+                d.M = mouthCorrection (true, d.d, d.mouthW, d.cutup, 1.0);
+                const double kc = kOld[(size_t) (k - 24)];
+                d.Leff = d.c / (4.0 * d.f0) * kc;
+                d.lPhys = d.Leff - d.M;
+                Globals g = stopGlobals (STOP_GEDACKT);
+                g.ears = 1.0; g.cutup = knob (k);
+                ParamVec p;
+                voiceParams (k, g, VoiceOverride {}, d, p);
+                p[P_KCAL] = kc; p[P_FDESIGN] = d.f0 / kc;
+                B = gedacktTone (p, dur, dur - 1.0).db;
+            }
+            double kcWarm = 1.0;
+            int tries = 0;
+            auto level = [&] (double F, double& kcOut, double& cOut) {
+                double kc = kcWarm;
+                Metrics m;
+                for (int it = 0; it < 10; ++it)
+                {
+                    PipeDesign d = designGedackt (k);
+                    d.cutup *= F / gedacktCutVoicing (k);
+                    d.M = mouthCorrection (true, d.d, d.mouthW, d.cutup, 0.0);
+                    d.Leff = d.c / (4.0 * d.f0) * kc;
+                    d.lPhys = d.Leff - d.M;
+                    Globals g = stopGlobals (STOP_GEDACKT);
+                    ParamVec p;
+                    voiceParams (k, g, VoiceOverride {}, d, p);
+                    p[P_KCAL] = kc; p[P_FDESIGN] = d.f0 / kc;
+                    m = gedacktTone (p, dur, dur - 1.0);
+                    ++tries;
+                    if (! std::isfinite (m.f)) break;
+                    const double c = cents (m.f, midiToHz (k));
+                    if (std::abs (c) < 0.3 || std::abs (c) > 600.0) break;
+                    kc *= std::exp2 (c / 1200.0);
+                }
+                cOut = std::isfinite (m.f) ? cents (m.f, midiToHz (k)) : 9999.0;
+                kcOut = kc;
+                if (std::abs (cOut) < 5.0) kcWarm = kc;
+                return std::abs (cOut) < 5.0 ? m.db : 0.0;      // (a pipe not on its key counts as silent)
+            };
+            // bracket: the level falls as the cut-up rises
+            double kc, c;
+            double F0 = gedacktCutVoicing (k), L0 = level (F0, kc, c);
+            double Fa = F0, La = L0, Fb = F0, Lb = L0;
+            for (int s = 0; s < 12 && ! ((La - B) >= 0 && (Lb - B) <= 0); ++s)
+            {
+                if (La - B < 0) { Fb = Fa; Lb = La; Fa -= 0.03; La = level (Fa, kc, c); }
+                else { Fa = Fb; La = Lb; Fb += 0.03; Lb = level (Fb, kc, c); }
+            }
+            double F = F0, L = L0;
+            for (int it = 0; it < 12; ++it)
+            {
+                F = (La - Lb) > 1e-9 ? Fa + (La - B) / (La - Lb) * (Fb - Fa) : 0.5 * (Fa + Fb);
+                F = std::clamp (F, Fa + 0.1 * (Fb - Fa), Fb - 0.1 * (Fb - Fa));
+                L = level (F, kc, c);
+                if (std::abs (L - B) < 0.1 || Fb - Fa < 0.002) break;
+                if (L > B) { Fa = F; La = L; } else { Fb = F; Lb = L; }
+            }
+            L = level (F, kc, c);
+            std::printf ("  %3d  %5.1f   %.3f  %.5f %+6.1f  %5.1f   (%d)\n", k, B, F, kc, c, L, tries);
+            std::fflush (stdout);
+        }
+        return 0;
+    }
+    if (what == "gfit" && argc > 3)
+    {
+        // v2.0 diagnostic: the user's voicing, fitted to the level they heard with the knob. For the keys argv[2]..argv[3]
+        // (every argv[4]-th, default 1): B = the distributed Gedackt (no voicing, ears 100 %, the stopper table compiled in)
+        // with the Cut-up knob at the voicing's factor; then, for each factor in argv[5..] (absolute, x Janke's rule), the
+        // pipe as the plugin will build it (that cut-up, no ears, cut-up follow from its built resonance) with its stopper
+        // set so that it speaks on its key (kcal, from 1 by steps of the measured cents). Mean levels over the keys.
+        const int lo = std::atoi (argv[2]), hi = std::atoi (argv[3]);
+        const int step = argc > 4 ? std::max (1, std::atoi (argv[4])) : 1;
+        std::vector<double> facs;
+        for (int i = 5; i < argc; ++i) facs.push_back (std::atof (argv[i]));
+        auto built = [] (int k, double F, double kc, ParamVec& p) {
+            PipeDesign d = designGedackt (k);
+            d.cutup *= F / gedacktCutVoicing (k);
+            d.M = mouthCorrection (true, d.d, d.mouthW, d.cutup, 0.0);
+            d.Leff = d.c / (4.0 * d.f0) * kc;
+            d.lPhys = d.Leff - d.M;
+            Globals g = stopGlobals (STOP_GEDACKT);
+            voiceParams (k, g, VoiceOverride {}, d, p);
+            p[P_KCAL] = kc;
+            p[P_FDESIGN] = d.f0 / kc;
+        };
+        double sumB = 0;
+        std::vector<double> sumF (facs.size(), 0.0);
+        int n = 0;
+        std::printf ("  key   B: cents  dB ");
+        for (double F : facs) std::printf ("|  x%.3f: kcal   cents   dB ", F);
+        std::printf ("\n");
+        for (int k = lo; k <= hi; k += step)
+        {
+            const double dur = k < 40 ? 4.0 : 2.6;
+            Metrics mb;
+            {
+                PipeDesign d = designGedackt (k);
+                const double fac = gedacktCutVoicing (k);
+                d.cutup /= fac;
+                d.M = mouthCorrection (true, d.d, d.mouthW, d.cutup, 1.0);
+                const double kc = kcalForStop (1, k);
+                d.Leff = d.c / (4.0 * d.f0) * kc;
+                d.lPhys = d.Leff - d.M;
+                Globals g = stopGlobals (STOP_GEDACKT);
+                g.ears = 1.0; g.cutup = fac;
+                ParamVec p;
+                voiceParams (k, g, VoiceOverride {}, d, p);
+                p[P_KCAL] = kc; p[P_FDESIGN] = d.f0 / kc;
+                mb = gedacktTone (p, dur, dur - 1.0);
+            }
+            std::printf ("  %3d  %+7.1f %5.1f ", k, cents (mb.f, midiToHz (k)), mb.db);
+            sumB += mb.db;
+            for (size_t i = 0; i < facs.size(); ++i)
+            {
+                double kc = 1.0;
+                ParamVec p;
+                built (k, facs[i], kc, p);
+                Metrics m = gedacktTone (p, dur, dur - 1.0);
+                for (int it = 0; it < 8; ++it)
+                {
+                    if (! std::isfinite (m.f)) break;
+                    const double c = cents (m.f, midiToHz (k));
+                    if (std::abs (c) < 0.5 || std::abs (c) > 600.0) break;
+                    kc *= std::exp2 (c / 1200.0);
+                    built (k, facs[i], kc, p);
+                    m = gedacktTone (p, dur, dur - 1.0);
+                }
+                std::printf ("|        %.4f %+7.1f %5.1f ", kc, std::isfinite (m.f) ? cents (m.f, midiToHz (k)) : 9999.0, m.db);
+                sumF[i] += m.db;
+            }
+            std::printf ("\n");
+            ++n;
+        }
+        std::printf ("  mean  B %.2f dB", sumB / n);
+        for (size_t i = 0; i < facs.size(); ++i) std::printf ("  |  x%.3f %.2f dB", facs[i], sumF[i] / n);
+        std::printf ("\n");
+        return 0;
+    }
+    if (what == "gvoicetab" && argc > 2)
+    {
+        // v2.0 diagnostic: every key, three Gedackts (pitch lock off, reverb none, the level of gedacktTone: dB SPL at 1 m):
+        //   A  as distributed before the voicing: cut-up x1.00, ears 100 %, the stopper table compiled in now
+        //   B  A with the Cut-up knob at the voicing's factor (the stopper left where it was)
+        //   C  the voiced design (factor built in, no ears) with the stopper table of argv[2] (kcalgen of that design)
+        std::vector<double> kc;
+        {
+            std::FILE* f = std::fopen (argv[2], "r");
+            if (! f) { std::printf ("  cannot read %s\n", argv[2]); return 1; }
+            char line[256];
+            while (std::fgets (line, sizeof line, f))
+            {
+                double x; int key;
+                if (std::sscanf (line, " %lf, // %d", &x, &key) == 2) kc.push_back (x);
+            }
+            std::fclose (f);
+        }
+        if (kc.size() != 73) { std::printf ("  %zu factors in %s (73 wanted)\n", kc.size(), argv[2]); return 1; }
+        //   D  B with its stopper moved until it speaks on its key (the body lengthened or shortened, 3 steps), ears 100 %
+        //   E  the voiced design (no ears) with its stopper moved the same way (instead of kcalgen's table)
+        std::printf ("  key  name  factor |  A: cents regime   dB |  B: cents regime   dB |  C: cents regime   dB |  D: cents regime   dB |  E: cents regime   dB\n");
+        for (int k = 24; k <= 96; ++k)
+        {
+            const double fac = gedacktCutVoicing (k);
+            const double dur = k < 40 ? 4.0 : 2.6;
+            Metrics m[5];
+            for (int s = 0; s < 5; ++s)
+            {
+                if (s >= 3)
+                {
+                    PipeDesign d = designGedackt (k);
+                    Globals g = stopGlobals (STOP_GEDACKT);
+                    double kcal = kcalForStop (1, k);
+                    if (s == 3)
+                    {
+                        d.cutup /= fac;
+                        d.M = mouthCorrection (true, d.d, d.mouthW, d.cutup, 1.0);
+                        g.ears = 1.0;
+                        g.cutup = fac;
+                    }
+                    else kcal = 1.0;
+                    d.Leff = d.c / (4.0 * d.f0) * kcal;
+                    d.lPhys = d.Leff - d.M;
+                    ParamVec p;
+                    voiceParams (k, g, VoiceOverride {}, d, p);
+                    p[P_KCAL] = kcal;
+                    p[P_FDESIGN] = d.f0 / kcal;
+                    Metrics mm = gedacktTone (p, dur, dur - 1.0);
+                    for (int it = 0; it < 3 && std::isfinite (mm.f) && std::abs (mm.regime - 1.0) < 0.06; ++it)
+                    {
+                        const double c = cents (mm.f, midiToHz (k));
+                        if (std::abs (c) < 0.5) break;
+                        p[P_LPHYS] += d.c / (4.0 * mm.f) * (std::exp2 (c / 1200.0) - 1.0);
+                        mm = gedacktTone (p, dur, dur - 1.0);
+                    }
+                    m[s] = mm;
+                    continue;
+                }
+                PipeDesign d = designGedackt (k);
+                Globals g = stopGlobals (STOP_GEDACKT);
+                double kcal = kcalForStop (1, k);
+                if (s < 2)
+                {
+                    d.cutup /= fac;
+                    d.M = mouthCorrection (true, d.d, d.mouthW, d.cutup, 1.0);
+                    g.ears = 1.0;
+                    if (s == 1) g.cutup = fac;
+                }
+                else kcal = kc[(size_t) (k - 24)];
+                d.Leff = d.c / (4.0 * d.f0) * kcal;
+                d.lPhys = d.Leff - d.M;
+                ParamVec p;
+                voiceParams (k, g, VoiceOverride {}, d, p);
+                p[P_KCAL] = kcal;
+                p[P_FDESIGN] = d.f0 / kcal;
+                m[s] = gedacktTone (p, dur, dur - 1.0);
+            }
+            char nm[8];
+            organName (k, nm);
+            std::printf ("  %3d  %-4s  %5.2f ", k, nm, fac);
+            for (int s = 0; s < 5; ++s)
+                std::printf (" | %+7.1f  %5.2f %5.1f", std::isfinite (m[s].f) ? cents (m[s].f, midiToHz (k)) : 9999.0, m[s].regime, m[s].db);
+            std::printf ("\n");
+        }
+        return 0;
+    }
+    if (what == "gonset")
+    {
+        // v2.0 diagnostic: the pitch at the speech of a note through the engine (reverb off), as played (pitch lock as the
+        // stop's default): cents against the settled pitch (1.0-1.5 s) in 20 ms windows every 20 ms, for velocities 30, 64,
+        // 100, 127 (argv[2]: key, argv[3]: stop 0/1, argv[4]: legato from this key, held 1 s, -1 none)
+        const int k = argc > 2 ? std::atoi (argv[2]) : 60;
+        const int st = argc > 3 ? std::atoi (argv[3]) : 1;
+        const int from = argc > 4 ? std::atoi (argv[4]) : -1;
+        const double fs = 48000.0;
+        auto pitchAt = [&] (const std::vector<float>& x, size_t c, double f0) {
+            // normalised autocorrelation over 20 ms around c, lag searched +-6 % of the period, parabolic peak
+            const int W = 960, T0 = (int) std::lround (fs / f0);
+            const int lo = (int) (T0 * 0.94), hi = (int) (T0 * 1.06) + 1;
+            if (c < (size_t) (W / 2 + hi + 2) || c + W / 2 >= x.size()) return 0.0;
+            const size_t a = c - W / 2;
+            std::vector<double> r ((size_t) (hi + 2), 0.0);
+            double e0 = 0;
+            for (int i = 0; i < W; ++i) e0 += (double) x[a + i] * x[a + i];
+            if (e0 <= 1e-20) return 0.0;
+            int best = lo;
+            for (int L = lo - 1; L <= hi + 1; ++L)
+            {
+                double s = 0, e1 = 0;
+                for (int i = 0; i < W; ++i) { s += (double) x[a + i] * x[a + i - L]; e1 += (double) x[a + i - L] * x[a + i - L]; }
+                r[(size_t) L] = s / std::sqrt (e0 * e1 + 1e-30);
+            }
+            for (int L = lo; L <= hi; ++L) if (r[(size_t) L] > r[(size_t) best]) best = L;
+            const double y0 = r[(size_t) best - 1], y1 = r[(size_t) best], y2 = r[(size_t) best + 1];
+            const double den = y0 - 2 * y1 + y2;
+            const double d = den < 0 ? 0.5 * (y0 - y2) / den : 0.0;
+            return r[(size_t) best] > 0.5 ? fs / (best + d) : 0.0;
+        };
+        Globals G = st == 1 ? stopGlobals (STOP_GEDACKT) : Globals();
+        G.reverb = 0;
+        // argv[5]: 1 no starting-vortex pulse, 2 jet feedback x0.5 (a less saturated jet), 3 turbulence 0, 4 velocity sensitivity 0
+        const int var = argc > 5 ? std::atoi (argv[5]) : 0;
+        if (var == 1) G.kick = 0.0;
+        if (var == 2) G.jetGain = 0.5;
+        if (var == 3) G.noise = 0.0;
+        if (var == 4) G.velSens = 0.0;
+        const double f0 = midiToHz (k);
+        if (from == -2)
+        {
+            // the release: held 1.5 s, then the key up; pitch and level after it, every 10 ms
+            std::printf ("  key %d, %s: release, cents against the held pitch / level dB re held, from the key up\n", k, st == 1 ? "Gedackt" : "Prinzipal");
+            for (int vel : { 64 })
+            {
+                auto e = std::make_unique<Engine>();
+                e->prepare (fs, 512);
+                e->setGlobals (G);
+                std::vector<float> L (480), R (480), out;
+                e->noteOn (1, k, vel);
+                for (int b = 0; b < 150; ++b) { e->process (L.data(), R.data(), 480); for (int i = 0; i < 480; ++i) out.push_back (L[(size_t) i] + R[(size_t) i]); }
+                e->noteOff (1);
+                for (int b = 0; b < 60; ++b) { e->process (L.data(), R.data(), 480); for (int i = 0; i < 480; ++i) out.push_back (L[(size_t) i] + R[(size_t) i]); }
+                std::vector<double> fsx;
+                for (size_t c = 48000; c < 72000; c += 480) { const double f = pitchAt (out, c, f0); if (f > 0) fsx.push_back (f); }
+                std::sort (fsx.begin(), fsx.end());
+                const double fset = fsx.empty() ? f0 : fsx[fsx.size() / 2];
+                double eset = 0;
+                for (size_t i = 48000; i < 72000; ++i) eset += (double) out[i] * out[i];
+                eset /= 24000;
+                for (int t = 0; t <= 400; t += 20)
+                {
+                    const size_t c = 72000 + (size_t) t * 48;
+                    const double f = pitchAt (out, c, fset);
+                    double ee = 0;
+                    for (size_t i = c - 480; i < c + 480 && i < out.size(); ++i) ee += (double) out[i] * out[i];
+                    std::printf ("   %3d ms  %s  %6.1f dB\n", t, f > 0 ? (std::to_string ((int) std::lround (1200 * std::log2 (f / fset))) + " c").c_str() : "   -  ",
+                                 10 * std::log10 (ee / 960 / (eset + 1e-30) + 1e-12));
+                }
+            }
+            return 0;
+        }
+        std::printf ("  key %d, %s%s: cents against the settled pitch (level dB re settled below), from the key\n", k,
+                     st == 1 ? "Gedackt" : "Prinzipal", from >= 0 ? (", legato from " + std::to_string (from)).c_str() : "");
+        std::printf ("   ms  ");
+        for (int t = 10; t <= 300; t += 20) std::printf (" %5d", t);
+        std::printf ("    settled\n");
+        for (int vel : { 30, 64, 100, 127 })
+        {
+            auto e = std::make_unique<Engine>();
+            e->prepare (fs, 512);
+            e->setGlobals (G);
+            std::vector<float> L (480), R (480), out;
+            if (from >= 0)
+            {
+                e->noteOn (2, from, vel);
+                for (int b = 0; b < 100; ++b) e->process (L.data(), R.data(), 480);
+            }
+            e->noteOn (1, k, vel);
+            if (from >= 0) e->noteOff (2);
+            std::vector<double> pfs;      // the focus pipe's foot pressure at the end of each 10 ms block
+            auto tel = std::make_unique<Telemetry>();
+            for (int b = 0; b < 160; ++b)
+            {
+                e->process (L.data(), R.data(), 480);
+                for (int i = 0; i < 480; ++i) out.push_back (L[(size_t) i] + R[(size_t) i]);
+                e->fillTelemetry (*tel);
+                pfs.push_back (tel->pf);
+            }
+            if (var == 9)
+            {
+                // the fundamental alone: an RBJ band-pass at the key (Q 4), forwards then backwards (no phase)
+                const double w = kTwoPi * f0 / fs, al = std::sin (w) / 8.0, a0 = 1 + al;
+                const double b0 = al / a0, a1 = -2 * std::cos (w) / a0, a2 = (1 - al) / a0;
+                for (int pass = 0; pass < 2; ++pass)
+                {
+                    double x1 = 0, x2 = 0, y1 = 0, y2 = 0;
+                    auto run = [&] (float& s) { const double x = s, y = b0 * x - b0 * x2 - a1 * y1 - a2 * y2; x2 = x1; x1 = x; y2 = y1; y1 = y; s = (float) y; };
+                    if (pass == 0) for (auto& s : out) run (s); else for (auto it = out.rbegin(); it != out.rend(); ++it) run (*it);
+                }
+            }
+            std::vector<double> fsx;
+            for (size_t c = 48000; c < 72000; c += 480) { const double f = pitchAt (out, c, f0); if (f > 0) fsx.push_back (f); }
+            std::sort (fsx.begin(), fsx.end());
+            const double fset = fsx.empty() ? f0 : fsx[fsx.size() / 2];
+            double eset = 0;
+            for (size_t i = 48000; i < 72000; ++i) eset += (double) out[i] * out[i];
+            eset /= 24000;
+            std::printf ("  v%3d ", vel);
+            for (int t = 10; t <= 300; t += 20)
+            {
+                const double f = pitchAt (out, (size_t) (t * 48), fset);
+                if (f > 0) std::printf (" %+5.0f", 1200 * std::log2 (f / fset)); else std::printf ("     -");
+            }
+            std::printf ("    %+.1f c vs key\n       ", 1200 * std::log2 (fset / f0));
+            for (int t = 10; t <= 300; t += 20)
+            {
+                double ee = 0;
+                for (int i = t * 48 - 480; i < t * 48 + 480; ++i) if (i >= 0) ee += (double) out[(size_t) i] * out[(size_t) i];
+                std::printf (" %5.0f", 10 * std::log10 (ee / 960 / (eset + 1e-30) + 1e-12));
+            }
+            std::printf ("    (level)\n       ");
+            for (int t = 10; t <= 300; t += 20) std::printf (" %5.0f", 100.0 * pfs[(size_t) (t / 10)] / (pfs.back() + 1e-30));
+            std::printf ("    (foot pressure %% of settled, %.1f mmWS)\n", pfs.back() / MMWS);
+        }
+        return 0;
+    }
+    if (what == "gcand")
+    {
+        // v2.0 diagnostic: how many wall modes lie below the top of hearing (the candidates, capped at 1150) and how many are
+        // kept (64), per key, for the Gedackt's board and the Prinzipal's shell, with every head
+        std::printf ("  key   Gedackt board: candidates/kept per head          | Prinzipal shell: candidates/kept per head\n");
+        for (int k = 24; k <= 96; k += 6)
+        {
+            std::printf ("  %3d ", k);
+            for (int st = 1; st >= 0; --st)
+            {
+                const PipeDesign d = st == 1 ? designGedackt (k) : designPrinzipal (k);
+                for (int hd = 0; hd < kNumHeads; ++hd)
+                {
+                    StrikeParams s;
+                    s.L = d.lPhys; s.d = d.d; s.head = hd; s.box = st == 1; s.width = d.mouthW; s.depth = d.depth;
+                    s.morph = st == 1 ? 1.0 : 0.0;
+                    MalletModel m;
+                    m.prepare (48000.0);
+                    m.setParams (s);
+                    m.strike (1.0);
+                    std::printf (" %4d/%2d", m.candidateCount(), m.modeCount());
+                }
+                std::printf (st == 1 ? "  |" : "\n");
+            }
+        }
+        return 0;
+    }
+    if (what == "gmal")
+    {
+        // v2.0 diagnostic: the Gedackt in MALLET mode through the engine (reverb off), one stroke per key (argv[2]: head,
+        // default 4 = yarn; argv[3]: velocity, default 100; argv[4]: a key to follow in time instead). Per key: the wall's
+        // modes (count, lowest), the contact, the level and a brightness (rms of the first difference over rms, as Hz)
+        const int head = argc > 2 ? std::atoi (argv[2]) : 4;
+        const int vel = argc > 3 ? std::atoi (argv[3]) : 100;
+        const int follow = argc > 4 ? std::atoi (argv[4]) : -1;
+        const bool prinz = argc > 5 && std::atoi (argv[5]) == 0;       // argv[5] 0: the Prinzipal
+        auto e = std::make_unique<Engine>();
+        e->prepare (48000, 512);
+        Globals G = prinz ? Globals() : stopGlobals (STOP_GEDACKT);
+        G.excite = 1; G.head = head; G.reverb = 0;
+        e->setGlobals (G);
+        std::vector<float> L (512), R (512);
+        auto Telem = std::make_unique<Telemetry>();
+        auto bright = [] (const std::vector<float>& x, size_t a, size_t b) {
+            double s = 0, d = 0;
+            for (size_t i = a + 1; i < b; ++i) { s += (double) x[i] * x[i]; d += (double) (x[i] - x[i - 1]) * (x[i] - x[i - 1]); }
+            return std::pair<double, double> { 10 * std::log10 (s / (b - a) + 1e-30), s > 0 ? 48000.0 / kTwoPi * std::sqrt (d / s) : 0.0 };
+        };
+        int id = 1;
+        if (follow < 0)
+            std::printf ("  key  modes active lowest[Hz] contacts tC[ms] Fpk[N] |  0-50 ms dB  Hz | 50-300 ms dB  Hz | 0.3-1 s dB  Hz\n");
+        for (int k = (follow < 0 ? 24 : follow); k <= (follow < 0 ? 96 : follow); k += 2)
+        {
+            e->allOff (true);
+            std::vector<float> out;
+            for (int b = 0; b < 20; ++b) e->process (L.data(), R.data(), 512);
+            e->noteOn (id, k, vel);
+            int nModes = -1, nAct = -1, contacts = 0;
+            double lowest = 0, tc = 0, fpk = 0;
+            for (int b = 0; b < 94; ++b)
+            {
+                e->process (L.data(), R.data(), 512);
+                out.insert (out.end(), L.begin(), L.end());
+                if (b == 4)
+                {
+                    e->fillTelemetry (*Telem);
+                    nModes = Telem->mallet.nModes; nAct = Telem->mallet.nActive; contacts = Telem->mallet.contacts;
+                    tc = Telem->mallet.tContact * 1e3; fpk = Telem->mallet.fPeak;
+                    lowest = 1e9;
+                    for (int i = 0; i < Telem->mallet.nShown; ++i) lowest = std::min (lowest, (double) Telem->mallet.modes[i].f);
+                    if (Telem->mallet.nShown == 0) lowest = 0;
+                }
+            }
+            e->noteOff (id);
+            ++id;
+            if (follow >= 0)
+            {
+                std::printf ("  key %d: modes %d, active %d, lowest shown %.0f Hz, contacts %d, contact %.2f ms, peak %.2f N\n", k, nModes, nAct, lowest, contacts, tc, fpk);
+                for (size_t a = 0; a + 1200 <= out.size(); a += 1200)
+                {
+                    const auto r = bright (out, a, a + 1200);
+                    std::printf ("    %4.0f ms  %6.1f dB  %6.0f Hz\n", a / 48.0, r.first, r.second);
+                }
+                break;
+            }
+            const auto a = bright (out, 0, 2400), b2 = bright (out, 2400, 14400), c = bright (out, 14400, 48000);
+            char nm[8];
+            organName (k, nm);
+            std::printf ("  %-4s %5d %6d %9.0f %8d %6.2f %6.2f | %7.1f %5.0f | %7.1f %5.0f | %7.1f %5.0f\n", nm, nModes, nAct, lowest, contacts, tc, fpk,
+                         a.first, a.second, b2.first, b2.second, c.first, c.second);
+        }
+        return 0;
+    }
+    if (what == "gflue")
+    {
+        // v2.0 diagnostic: the Gedackt (straight cut-up) with the Prinzipal's flue rule (as built) and with the flue of real
+        // wooden pipes, h = 1.0 mm (W / 47 mm)^0.309 through BDO's 47 x 60 mm pipe (about 1 mm) and Fischer et al.'s
+        // Schuke stopped pipe (9 mm, 0.6 mm); the toe follows (same foot pressure). Flue, Re_h, Ising, swing, noise, partials
+        std::printf ("  key  flue      h [mm]  Re_h   Ising  swing/b  cents  level  noise |   H2    H3    H4    H5    H6    H7\n");
+        for (int k : { 24, 30, 36, 42, 48, 54, 60, 72, 84, 96 })
+            for (int vr = 0; vr < 2; ++vr)
+            {
+                PipeDesign d = designGedackt (k);
+                if (vr == 1)
+                {
+                    const double x = 1.0e-3 * std::pow (d.mouthW / 0.047, 0.309) / d.flue;
+                    d.flue *= x;
+                    d.toe *= std::sqrt (x);
+                    d.footVol = kPi / 12.0 * d.footLen * (d.d * d.d + d.d * d.toe + d.toe * d.toe);
+                    d.ising *= std::sqrt (x);
+                }
+                const Globals g = stopGlobals (STOP_GEDACKT);
+                ParamVec p;
+                voiceParams (k, g, VoiceOverride {}, d, p);
+                Voice v;
+                v.jetJitter = Engine::kJetJitter;
+                v.servoEnabled = false;
+                v.prepare (FS, 3);
+                v.start (p, 0.0);
+                const double dur = k < 40 ? 4.0 : 2.6;
+                const int n = (int) (dur * FS);
+                std::vector<double> mouth ((size_t) n), L ((size_t) n), R ((size_t) n), out ((size_t) n);
+                for (int i = 0; i < n; i += 4096) { const int m = std::min (4096, n - i); v.render (m, L.data() + i, R.data() + i, mouth.data() + i); }
+                for (int i = 0; i < n; ++i) out[(size_t) i] = L[(size_t) i] + R[(size_t) i];
+                const Metrics mo = analyze (out, FS, p[P_FTARGET], dur - 1.0);
+                // noise: what one period later does not repeat
+                const double T = FS / (std::isfinite (mo.f) && mo.f > 0 ? mo.f : p[P_FTARGET]);
+                double es = 0, en = 0;
+                const int i0 = (int) ((dur - 1.0) * FS);
+                for (int i = i0; i < n; ++i)
+                {
+                    const double pos = i - T;
+                    const int j = (int) pos;
+                    const double fr = pos - j;
+                    const double xd = out[(size_t) j] * (1 - fr) + out[(size_t) j + 1] * fr;
+                    es += out[(size_t) i] * out[(size_t) i]; en += 0.5 * (out[(size_t) i] - xd) * (out[(size_t) i] - xd);
+                }
+                double a1 = 0.0;
+                v.requestCapture (T);
+                std::vector<double> sk (8192), skL (8192), skR (8192);
+                for (int it = 0; it < 40 && ! v.captureReady(); ++it) v.render (1024, skL.data(), skR.data(), sk.data());
+                if (v.captureReady())
+                {
+                    const PeriodCapture& c = v.capture();
+                    double re = 0, im = 0;
+                    for (int i = 0; i < K_SNAP; ++i) { re += c.eta[i] * std::cos (kTwoPi * i / K_SNAP); im += c.eta[i] * std::sin (kTwoPi * i / K_SNAP); }
+                    a1 = std::sqrt (re * re + im * im) * 2.0 / K_SNAP;
+                }
+                const double Re = d.Uj * d.flue * d.rho / d.mu;
+                char nm[8];
+                organName (k, nm);
+                std::printf ("  %-4s %-8s  %5.2f  %5.0f  %5.2f  %6.2f  %+6.1f  %5.1f  %5.1f | %5.1f %5.1f %5.1f %5.1f %5.1f %5.1f\n", nm,
+                             vr == 1 ? "real wood" : "as built", d.flue * 1e3, Re, d.ising, a1,
+                             std::isfinite (mo.f) ? cents (mo.f, p[P_FTARGET]) : 999.0, mo.db, 10 * std::log10 (en / es),
+                             mo.hm[1], mo.hm[2], mo.hm[3], mo.hm[4], mo.hm[5], mo.hm[6]);
+            }
+        return 0;
+    }
+    if (what == "gjet")
+    {
+        // v2.0 diagnostic: the jet at the lip over one period (peak |eta - y0| / b, the share of the period the flow is
+        // switched fully in or out) and the noise (what one period later does not repeat: var(x(t) - x(t - T)) / 2 against
+        // the signal's power), the Gedackt as built and with Turbulence x4, and the Prinzipal
+        std::printf ("  key  pipe              swing/b  sat%%   noise dB re signal   level\n");
+        for (int k : { 36, 48, 60, 72, 84 })
+            for (int vr = 0; vr < 3; ++vr)
+            {
+                Globals g = vr == 2 ? Globals() : stopGlobals (STOP_GEDACKT);
+                if (vr == 1) g.noise *= 4.0;
+                ParamVec p;
+                voiceParams (k, g, VoiceOverride {}, vr == 2 ? designPrinzipal (k) : designGedackt (k), p);
+                Voice v;
+                v.jetJitter = Engine::kJetJitter;
+                v.servoEnabled = false;
+                v.prepare (FS, 3);
+                v.start (p, 0.0);
+                const int n = (int) (3.0 * FS);
+                std::vector<double> mouth ((size_t) n), L ((size_t) n), R ((size_t) n);
+                for (int i = 0; i < n; i += 4096) { const int m = std::min (4096, n - i); v.render (m, L.data() + i, R.data() + i, mouth.data() + i); }
+                const double T = FS / p[P_FTARGET];
+                v.requestCapture (T);
+                std::vector<double> sk (8192), skL (8192), skR (8192);
+                for (int it = 0; it < 40 && ! v.captureReady(); ++it) v.render (1024, skL.data(), skR.data(), sk.data());
+                double sw = 0, sat = 0;
+                int ks = 0;
+                if (v.captureReady())
+                {
+                    const PeriodCapture& c = v.capture();
+                    for (int i = 0; i < (int) (sizeof (c.eta) / sizeof (c.eta[0])); ++i)
+                    {
+                        sw = std::max (sw, (double) std::abs (c.eta[i]));
+                        if (c.inflow[i] < 0.05f || c.inflow[i] > 0.95f) sat += 1;
+                        ++ks;
+                    }
+                }
+                double es = 0, en = 0;
+                const int i0 = (int) (1.5 * FS);
+                for (int i = i0; i < n; ++i)
+                {
+                    const double x = L[(size_t) i] + R[(size_t) i];
+                    const double pos = i - T;
+                    const int j = (int) pos;
+                    const double fr = pos - j;
+                    const double xd = (L[(size_t) j] + R[(size_t) j]) * (1 - fr) + (L[(size_t) j + 1] + R[(size_t) j + 1]) * fr;
+                    es += x * x; en += 0.5 * (x - xd) * (x - xd);
+                }
+                const double lev = 10 * std::log10 (es / (n - i0) / 4e-10);
+                std::printf ("  %3d  %-16s  %6.1f  %4.0f   %8.1f            %5.1f\n", k, vr == 0 ? "Gedackt" : vr == 1 ? "Gedackt turb x4" : "Prinzipal",
+                             sw, ks ? 100.0 * sat / ks : 0.0, 10 * std::log10 (en / es), lev);
+            }
+        return 0;
+    }
+    if (what == "gtimbre")
+    {
+        // the Gedackt's tone colour: partials 1..9 (dB re the fundamental) of the mouth signal and of the voice's output
+        // (L + R, what the plugin plays), as built and with one knob moved; the Prinzipal for comparison (argv[2]: key)
+        const int k = argc > 2 ? std::atoi (argv[2]) : 60;
+        const Globals G0 = stopGlobals (STOP_GEDACKT);
+        struct V { const char* nm; void (*f) (Globals&); };
+        const V vars[] {
+            { "as built", [] (Globals&) {} },
+            { "cut-up +2.5 HT (Janke +7.5)", [] (Globals& g) { g.cutup = std::exp2 (2.5 / 16.0); } },
+            { "cut-up x1.25", [] (Globals& g) { g.cutup = 1.25; } },
+            { "cut-up x0.80", [] (Globals& g) { g.cutup = 0.80; } },
+            { "labium offset 0 b", [] (Globals& g) { g.y0b = 0.0; } },
+            { "labium offset 1 b", [] (Globals& g) { g.y0b = 1.0; } },
+            { "wind x0.6", [] (Globals& g) { g.bellows = 0.6; } },
+            { "wind x1.5", [] (Globals& g) { g.bellows = 1.5; } },
+            { "jet feedback x0.5", [] (Globals& g) { g.jetGain = 0.5; } },
+            { "mouth 1/4 circ. (narrower)", [] (Globals& g) { g.mouthFrac = 0.20; } },
+            { "scale +4 HT (wider)", [] (Globals& g) { g.scaleHT += 4.0; } },
+            { "scale -4 HT (narrower)", [] (Globals& g) { g.scaleHT -= 4.0; } },
+            { "wall loss x2.5", [] (Globals& g) { g.loss = 2.5 * 1.27; } },
+            { "ears 0", [] (Globals& g) { g.ears = 0; } },
+            { "arch 100 %", [] (Globals& g) { g.arch = 1; } },
+            { "turbulence 0", [] (Globals& g) { g.noise = 0; } },
+            { "cut-up follow 0", [] (Globals& g) { g.vFollow = 0; } },
+        };
+        char nm[8];
+        organName (k, nm);
+        std::printf ("  key %s: partials dB re H1 (mouth signal | voice output L+R), level dB SPL\n", nm);
+        auto row = [&] (const char* name, const ParamVec& p) {
+            const int n = (int) (3.0 * FS);
+            Voice v;
+            v.jetJitter = Engine::kJetJitter;
+            v.servoEnabled = false;
+            v.prepare (FS, 3);
+            v.start (p, 0.0);
+            std::vector<double> mouth ((size_t) n), L ((size_t) n), R ((size_t) n), out ((size_t) n);
+            for (int i = 0; i < n; i += 4096) { const int m = std::min (4096, n - i); v.render (m, L.data() + i, R.data() + i, mouth.data() + i); }
+            for (int i = 0; i < n; ++i) out[(size_t) i] = L[(size_t) i] + R[(size_t) i];
+            const Metrics a = analyze (mouth, FS, p[P_FTARGET], 2.0), b = analyze (out, FS, p[P_FTARGET], 2.0);
+            if (std::getenv ("OKL_TOP"))
+            {
+                // what the top radiates: (L + R) = 1.2 (mouth + top) without a side hole
+                std::vector<double> top ((size_t) n);
+                for (int i = 0; i < n; ++i) top[(size_t) i] = out[(size_t) i] / 1.2 - mouth[(size_t) i];
+                const Metrics c = analyze (top, FS, p[P_FTARGET], 2.0);
+                double et = 0, em = 0;
+                for (int i = (int) (2.0 * FS); i < n; ++i) { et += top[(size_t) i] * top[(size_t) i]; em += mouth[(size_t) i] * mouth[(size_t) i]; }
+                std::printf ("  %-28s top %5.1f dB re mouth; top's partials re its H1:", name, 10 * std::log10 (et / em));
+                for (int h = 1; h < 9; ++h) std::printf (" %5.1f", c.hm[h]);
+                std::printf ("\n");
+            }
+            std::printf ("  %-28s %5.1f |", name, a.db);
+            for (int h = 1; h < 9; ++h) std::printf (" %5.1f", a.hm[h]);
+            std::printf (" |");
+            for (int h = 1; h < 9; ++h) std::printf (" %5.1f", b.hm[h]);
+            std::printf ("  x%.2f\n", a.regime);
+        };
+        std::printf ("  %-28s %5s | %5s %5s %5s %5s %5s %5s %5s %5s | (output: same)\n", "", "level", "H2", "H3", "H4", "H5", "H6", "H7", "H8", "H9");
+        for (const auto& vr : vars)
+        {
+            Globals g = G0;
+            vr.f (g);
+            row (vr.nm, gedacktPipe (k, g));
+        }
+        {
+            // the foot: its volume a tenth (a foot of 17 mm instead of 170 mm)
+            ParamVec pf = gedacktPipe (k, G0);
+            pf[P_FOOTVOL] *= 0.1;
+            row ("foot volume x0.1", pf);
+        }
+        ParamVec pp;
+        voiceParams (k, Globals(), VoiceOverride {}, designPrinzipal (k), pp);
+        row ("Prinzipal (as built)", pp);
+        if (std::getenv ("OKL_ATTACK"))
+        {
+            // the speech: foot pressure and mouth level in the first 60 ms, as built and with the foot a tenth
+            for (double fv : { 1.0, 0.1 })
+            {
+                ParamVec p = gedacktPipe (k, G0);
+                p[P_FOOTVOL] *= fv;
+                const int n = (int) (0.06 * FS);
+                Voice v;
+                v.jetJitter = Engine::kJetJitter;
+                v.servoEnabled = false;
+                v.prepare (FS, 3);
+                v.start (p, 0.0);
+                std::vector<double> mouth ((size_t) n), L ((size_t) n), R ((size_t) n);
+                std::printf ("  foot x%.1f: ", fv);
+                for (int i = 0; i < n; i += (int) (0.005 * FS))
+                {
+                    const int m = (int) (0.005 * FS);
+                    v.render (m, L.data() + i, R.data() + i, mouth.data() + i);
+                    double e = 0;
+                    for (int j = i; j < i + m; ++j) e += mouth[(size_t) j] * mouth[(size_t) j];
+                    std::printf (" %2.0f ms pf %4.0f Pa %5.1f dB |", (i + m) / FS * 1e3, v.pf, 10 * std::log10 (e / m / 4e-10 + 1e-30));
+                }
+                std::printf ("\n");
+            }
+        }
+        return 0;
+    }
+    if (what == "gdiag")
+    {
+        // the Gedackt's bass: which knob makes it speak (level, pitch, regime over the last second)
+        const Globals G0 = stopGlobals (STOP_GEDACKT);
+        struct V { const char* nm; void (*f) (Globals&); };
+        const V vars[] {
+            { "as built", [] (Globals&) {} },
+            { "cut-up x0.897 (-2.5 HT)", [] (Globals& g) { g.cutup = 0.897; } },
+            { "cut-up x0.80", [] (Globals& g) { g.cutup = 0.80; } },
+            { "cut-up x0.65", [] (Globals& g) { g.cutup = 0.65; } },
+            { "wind 75 mmWS", [] (Globals& g) { g.bellows = 75.0 * MMWS / 500.0; } },
+            { "arch 100 %", [] (Globals& g) { g.arch = 1; } },
+            { "ears 0", [] (Globals& g) { g.ears = 0; } },
+            { "loss 0.5", [] (Globals& g) { g.loss = 0.5; } },
+            { "jet feedback x2", [] (Globals& g) { g.jetGain = 2.0; } },
+            { "scale +4 HT", [] (Globals& g) { g.scaleHT += 4.0; } },
+        };
+        const int keys[] { 24, 30, 36, 39, 48 };
+        for (const auto& v : vars)
+        {
+            std::printf ("  %-26s", v.nm);
+            for (int k : keys)
+            {
+                Globals g = G0;
+                v.f (g);
+                const ParamVec p = gedacktPipe (k, g);
+                const Metrics m = gedacktTone (p, 4.0, 3.0);
+                std::printf ("  %d: %5.1f dB %+5.0f c x%.2f", k, m.db, std::isfinite (m.f) ? cents (m.f, p[P_FTARGET] * std::max (0.5, std::round (2 * m.regime) / 2)) : 0.0, m.regime);
+            }
+            std::printf ("\n");
+        }
+        return 0;
+    }
     if (what == "port" || what == "all") testPort();
     if (what == "derive" || what == "all") testDerive();
     if (what == "midi" || what == "all") testMidi();
@@ -2227,6 +3713,8 @@ int main (int argc, char** argv)
     if (what == "room" || what == "all") testRoom();
     if (what == "lab" || what == "all") testLab();
     if (what == "simd" || what == "all") testSimd();
+    if (what == "gedackt" || what == "all") testGedackt();
+    if (what == "tuning" || what == "all") testTuning();
     std::printf ("\n%s (%d failed checks)\n", g_fail ? "FAILED" : "OK", g_fail);
     return g_fail ? 1 : 0;
 }

@@ -3,10 +3,13 @@
  */
 #include "Params.h"
 #include "FpEnv.h"
+#include "Tuning.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <string_view>
 
 namespace okl
 {
@@ -15,13 +18,23 @@ namespace
 {
 const char* const kExciteNames[] { "Wind", "Mallet" };
 const char* const kMetalNames[] { "Common metal 30% Sn", "Spotted metal 50% Sn", "Tin 75% Sn", "Zinc", "Copper" };
-const char* const kHeadNames[] { "Hard rubber", "Acrylic", "Boxwood", "Brass" };
+const char* const kHeadNames[] { "Hard rubber", "Acrylic", "Boxwood", "Brass", "Yarn" };      // (V2: Yarn appended)
 const char* const kFmTargetNames[] { "Wind", "Length", "Upper lip" };
 const char* const kModDstNames[] { "Off", "Wind pressure", "Cut-up", "Labium offset", "Scale", "Open/Stopped", "Gas", "Temperature", "Tremulant",
                                    "Mouth width", "Turbulence", "Toe hole", "Length glide", "Side hole", "Sound speed", "Density", "FM depth",
                                    "FM ratio", "Jet feedback", "Cross drive", "Wave speed", "Edge tone", "Start pulse", "Nicking", "Wall loss",
                                    "Strike point", "Damper", "Wall" };
+// V2: the woods of Mallet.cpp's table (Wood Handbook species)
+const char* const kWoodNames[] { "White oak", "Red pine", "Sitka spruce", "Western red cedar" };
+
+/* V2: the Gedackt's wall loss: Rucz et al. (Forum Acusticum 2023) measured Q1 of five wooden 4' C pipes 1.16 to 1.28 times
+   (mean 1.205) below their finite-element model with smooth-wall boundary-layer losses and radiation (roughness and
+   wall vibration, they suggest). Put on the walls alone: (1.205 - r) / (1 - r) with r = 0.228, the share of the
+   radiation in this model's round-trip loss at f1 of their pipe 4/16 (69.8 x 86.9 mm, 131 Hz): 1.27 x the theory */
+constexpr double kGedacktLoss = 1.27;
 }
+
+const char* const kStopNames[kNumStops] { "Prinzipal 8'", "Gedackt 8'" };
 
 const char* const kModSrcNames[MS_COUNT] { "Off", "Velocity", "Key", "LFO 1", "LFO 2", "Envelope", "Mod wheel", "Pressure",
                                             "Pipe level", "Overblow", "Pitch deviation", "Random" };
@@ -71,7 +84,7 @@ const ParamDef kParamDefs[] = {
     { "excite",    "Excitation",    "EXCITE",  Group::Mallet, 0, 0, 1, 0, false, false, Fmt::Choice, 0, "", -1, F (excite), kExciteNames },
     { "metal",     "Pipe metal",    "METAL",   Group::Mallet, 0, 0, 4, 1, false, false, Fmt::Choice, 0, "", -1, F (metal), kMetalNames },
     { "wallMult",  "Wall",          "THICK",   Group::Mallet, 0, 0.5, 2, 1, true, false, Fmt::Mult, 2, "", -1, F (wallMult) },
-    { "head",      "Mallet head",   "HEAD",    Group::Mallet, 0, 0, 3, 1, false, false, Fmt::Choice, 0, "", -1, F (head), kHeadNames },
+    { "head",      "Mallet head",   "HEAD",    Group::Mallet, 0, 0, 4, 1, false, false, Fmt::Choice, 0, "", -1, F (head), kHeadNames },
     { "headD",     "Head size",     "HEAD D",  Group::Mallet, 0, 10, 50, 25, false, false, Fmt::Num, 0, "mm", -1, F (headD) },
     { "strikePos", "Strike point",  "STRIKE",  Group::Mallet, 0, 0.05, 0.95, 0.3, false, false, Fmt::Pct, 0, "%", -1, F (strikePos) },
     { "damper",    "Damper",        "DAMPER",  Group::Mallet, 0, 0, 1, 0.6, false, false, Fmt::Pct, 0, "%", -1, F (damper) },
@@ -97,6 +110,15 @@ const ParamDef kParamDefs[] = {
     { "lfo2Rate",  "LFO 2 rate",    "LFO 2",   Group::Mod, 0, 0.02, 20, 3, true, false, Fmt::Num, 2, "Hz", -1, F (lfo2Rate) },
     { "envAttack", "Env attack",    "ATTACK",  Group::Mod, 0, 0.001, 5, 0.05, true, false, Fmt::Num, 3, "s", -1, F (envAttack) },
     { "envDecay",  "Env decay",     "DECAY",   Group::Mod, 0, 0.01, 10, 1, true, false, Fmt::Num, 2, "s", -1, F (envDecay) },
+    // ---- V2 (appended): the stop, the Gedackt's mouth parts, the wood of a wooden pipe
+    { "stop",      "Stop",          "STOP",    Group::Stop, 0, 0, kNumStops - 1, 0, false, false, Fmt::Choice, 0, "", -1, F (stop), kStopNames },
+    { "ears",      "Ears",          "EARS",    Group::Voice, 0, 0, 1, 0, false, false, Fmt::Pct, 0, "%", -1, F (ears) },
+    { "arch",      "Arched cut-up", "ARCH",    Group::Voice, 0, 0, 1, 0, false, false, Fmt::Pct, 0, "%", -1, F (arch) },
+    { "wood",      "Pipe wood",     "WOOD",    Group::Mallet, 0, 0, 3, 0, false, false, Fmt::Choice, 0, "", -1, F (wood), kWoodNames },
+    // ---- v2.0 (appended): the tuning (Tuning.h): the temperament or a loaded Scala scale, the pitch of a1 (the web screen
+    // shows them in the TUNING panel, opened from the top bar; the native screen's GEOMETRY panel is full, its ATMOSPHERE has room)
+    { "temperament", "Temperament", "TEMPER",  Group::Atmos, 0, 0, kNumTemperaments - 1, 0, false, false, Fmt::Choice, 0, "", -1, F (temperament), kTemperamentNames },
+    { "pitchA",    "Pitch a1",      "a1",      Group::Atmos, 0, 380, 480, 440, false, false, Fmt::Num, 1, "Hz", -1, F (pitchA) },
 };
 #undef F
 const int kNumParams = (int) (sizeof (kParamDefs) / sizeof (kParamDefs[0]));
@@ -198,8 +220,41 @@ const char* groupTitle (Group g)
         case Group::Output: return "OUTPUT";
         case Group::Mallet: return "MALLET";
         case Group::Mod: return "MOD MATRIX";
+        case Group::Stop: return "STOP";
     }
     return "";
+}
+
+double stopDefault (int stop, int i)
+{
+    if (i < 0 || i >= kNumParams) return 0.0;
+    const ParamDef& d = kParamDefs[i];
+    const std::string_view id (d.id);
+    if (id == "stop") return std::clamp (stop, 0, kNumStops - 1);
+    if (stop != STOP_GEDACKT) return d.def;
+    // the Gedackt as built (designGedackt): Dickson's scale and mouth, the top stopped, wall loss of a wooden pipe (the
+    // arched cut-up starts straight, 0 %, as on the Prinzipal; v2.0, the user's voicing: no ears, 0 %, as on the Prinzipal,
+    // and the cut-up voiced per key range in designGedackt); v2.0: the upper lip on the jet's centre plane (Labium
+    // offset 0 b): no even partials (Fletcher & Douglas 1980: they vanish at zero offset; the recorder, with the long windway
+    // of a wooden pipe, has its lip nearly central), which the stopped pipe's sharp upper resonances lifted in the treble
+    if (id == "y0b") return 0.0;
+    if (id == "scaleHT") return gedacktScaleHT();
+    if (id == "mouthFrac") return gedacktMouthFrac();
+    if (id == "morph") return 1.0;
+    if (id == "loss") return kGedacktLoss;
+    return d.def;
+}
+
+void stopValues (int stop, double* out)
+{
+    for (int i = 0; i < kNumParams; ++i) out[i] = stopDefault (stop, i);
+}
+
+bool keptAcrossStops (int i)
+{
+    if (i < 0 || i >= kNumParams) return false;
+    const std::string_view id (kParamDefs[i].id);
+    return id == "temperament" || id == "pitchA";
 }
 
 int modDstParam (int dst)

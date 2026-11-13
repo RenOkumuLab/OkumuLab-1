@@ -55,6 +55,37 @@ const HeadProps kHeads[kNumHeads] = {
     { "Acrylic", 3.2e9, 0.37, 1190.0, 0.80 },
     { "Boxwood", 12e9, 0.30, 950.0, 0.70 },
     { "Brass", 100e9, 0.34, 8500.0, 0.90 },
+    /* V2: a yarn-wound head: wool on a rubber core. Wool felt under a rounded head follows F = K x^p with p near 2.5
+       (Stulov, Proc. Estonian Acad. Sci. Eng. 1995, 1(2) 172-182: measured hammers 1.5..3.5, his felt model 2.5); K and p
+       of a felt mallet striking a membrane, K = 1.6e8 N/m^2.54, p = 2.54 (Bilbao, Torin & Chatziioannou, Acta Acust.
+       united Ac. 101 (2015) 155-173, Fig. 12, after Rhaouti, Chaigne & Joly 1999), at every head size (no size law in
+       the sources). Lossless as there (e = 1: the felt's hysteresis, Stulov JASA 1995, is not modelled); the mass: a
+       sphere of the head size at the rubber core's density (the yarn's packing is not in the sources) */
+    { "Yarn", 0.0, 0.0, 1150.0, 1.0, 2.54, 1.6e8 },
+};
+
+/* V2: how long a head of mass m stays on a rigid wall at 1 m/s under F = K x^p (energy: the deepest dent
+   x_m = ((p + 1) m / 2 K)^(1/(p+1)); t = 2 x_m sqrt(pi) Gamma(1 + 1/(p+1)) / Gamma(1/2 + 1/(p+1))); Hertz keeps its
+   classic constant */
+double contactTime (double m, double K, double p)
+{
+    if (p == 1.5) return 3.2145 * std::pow (m * m / (K * K * 1.0), 0.2);
+    const double q = 1.0 / (p + 1.0);
+    return 2.0 * std::pow ((p + 1.0) * m / (2.0 * K), q) * std::sqrt (kPi) * std::tgamma (1.0 + q) / std::tgamma (0.5 + q);
+}
+
+/* V2: woods (Wood Handbook, FPL-GTR-190, ch. 5, at 12 % moisture content). E_L: the bending modulus of Table 5-3a + 10 %
+   (its note: that removes the shear deflection); E_T, E_R, G_LT: the ratios of Table 5-1 (white oak has no G_LT there: red
+   oak's); Poisson ratios: Table 5-2; density: specific gravity x 1000 kg/m^3 x 1.12 (oven-dry weight over the volume at
+   12 %). Loss factor: the Handbook's internal friction, a logarithmic decrement from about 0.02 (hot, dry wood) to 0.1
+   (hot, moist), cool wood in between: the geometric middle, 0.0447 / pi, for every species and direction (it gives no
+   species values) */
+constexpr double kWoodEta = 0.04472 / kPi;
+const WoodProps kWoods[kNumWoods] = {
+    { "White oak",         12.3e9 * 1.1, 0.072, 0.163, 0.081, 0.428, 0.618, 0.68 * 1120.0, kWoodEta },
+    { "Red pine",          11.2e9 * 1.1, 0.044, 0.088, 0.081, 0.315, 0.408, 0.46 * 1120.0, kWoodEta },
+    { "Sitka spruce",      10.8e9 * 1.1, 0.043, 0.078, 0.061, 0.467, 0.435, 0.40 * 1120.0, kWoodEta },
+    { "Western red cedar",  7.7e9 * 1.1, 0.055, 0.081, 0.086, 0.296, 0.484, 0.32 * 1120.0, kWoodEta },
 };
 
 constexpr double kStickMass = 0.003;       // effective mass of the handle at the head [kg]
@@ -313,7 +344,9 @@ cd hankelPrime (int n, double x)
 
 const MetalProps& metalProps (int i) { return kMetals[std::clamp (i, 0, kNumMetals - 1)]; }
 const HeadProps& headProps (int i) { return kHeads[std::clamp (i, 0, kNumHeads - 1)]; }
+const WoodProps& woodProps (int i) { return kWoods[std::clamp (i, 0, kNumWoods - 1)]; }
 double wallThickness (double d) { return 0.25e-3 + 0.009 * d; }
+double woodWallThickness (double w) { return w * (10.5 / 61.8); }     // Rucz et al.: walls 10-11 mm, widths 55.3-69.8 mm (mean 61.8)
 
 /* test hooks (labium_check) */
 double malletTestShellDelta (double lam, int n, double nu, double k, int root)
@@ -393,6 +426,7 @@ struct Cand { int n, m, br, bc; double ws, radial, mass, phiS, score, compl_; do
 
 void MalletModel::design()
 {
+    if (sp.box) { designBox(); return; }        // V2: a wooden pipe
     const MetalProps& mt = metalProps (sp.metal);
     E = mt.E; nu = mt.nu; rhoS = mt.rho; etaInt = mt.eta;
     a = 0.5 * std::max (sp.d, 0.002);
@@ -411,19 +445,27 @@ void MalletModel::design()
     const HeadProps& hd = headProps (sp.head);
     const double Rh = 0.5 * std::max (0.004, sp.headD);
     mh = hd.rho * 4.0 / 3.0 * kPi * Rh * Rh * Rh + kStickMass;
-    const double Es = 1.0 / ((1.0 - hd.nu * hd.nu) / hd.E + (1.0 - nu * nu) / E);
-    const double Rs = std::sqrt (Rh * (Rh * a / (Rh + a)));
-    Kh = 4.0 / 3.0 * Es * std::sqrt (Rs);
+    if (hd.K > 0) Kh = hd.K;        // V2: a wool head's measured law
+    else
+    {
+        const double Es = 1.0 / ((1.0 - hd.nu * hd.nu) / hd.E + (1.0 - nu * nu) / E);
+        const double Rs = std::sqrt (Rh * (Rh * a / (Rh + a)));
+        Kh = 4.0 / 3.0 * Es * std::sqrt (Rs);
+    }
+    pC = hd.p;
     eRest = hd.e;
-    // how long the mallet stays on the wall: Hertz on a rigid wall (1 m/s), or the thin wall giving way under it
-    // (point impedance of a plate, 8 sqrt(D rho h): the mallet's momentum spreads over m / Z)
-    const double tauHertz = 3.2145 * std::pow (mh * mh / (Kh * Kh * 1.0), 0.2);
+    // how long the mallet stays on the wall: the contact law on a rigid wall (1 m/s), or the thin wall giving way under
+    // it (point impedance of a plate, 8 sqrt(D rho h): the mallet's momentum spreads over m / Z). (v2.0: only to rank the
+    // modes when more than 64 lie below the top of hearing; none is left out for it)
+    const double tauHertz = contactTime (mh, Kh, pC);
     const double Dpl = E * h * h * h / (12.0 * (1.0 - nu * nu));
     const double tauEst = std::max (tauHertz, mh / (8.0 * std::sqrt (Dpl * ms)));
 
     const double wRef = std::sqrt (E / (rhoS * (1.0 - nu * nu))) / a;
-    // modes far above what the stroke excites (its spectrum is down ~55 dB at 12 / contact time) are left out
-    const double wMax = kTwoPi * std::min ({ 20000.0, 0.45 * fs, 12.0 / tauEst });
+    /* every mode up to the top of hearing (and below the rate's Nyquist): how much each one rings is the contact force's
+       to decide, solved every sample. (v2.0 until then: also none above 12 / the contact time at 1 m/s, a cut for speed
+       that left a soft head's pipes without a wall from one key to the next) */
+    const double wMax = kTwoPi * std::min (20000.0, 0.45 * fs);
     thread_local static Cand cand[1200];       // (per audio thread: two plugin instances may render at once)
     int nc = 0;
     int overN = 0;
@@ -473,6 +515,7 @@ void MalletModel::design()
         if (n >= 2 && firstOver) ++overN; else overN = 0;
     }
 
+    nCand = nc;
     // keep the strongest radiators, plus the modes that matter most to the contact itself
     std::sort (cand, cand + nc, [] (const Cand& x, const Cand& y) { return x.score > y.score; });
     const int nRad = std::min (nc, kMaxModes - 16);
@@ -507,7 +550,7 @@ void MalletModel::design()
     }
     for (int i = nSel; i < kMaxModes; ++i)
     {
-        zr[i] = zi[i] = pr[i] = pim[i] = g0r[i] = g0i[i] = g1r[i] = g1i[i] = wq[i] = oa[i] = ob[i] = 0.0;
+        zr[i] = zi[i] = pr[i] = pim[i] = g0r[i] = g0i[i] = g1r[i] = g1i[i] = wq[i] = oa[i] = ob[i] = oF[i] = 0.0;
         gAbs[i] = 0;
     }
     spDesigned = sp;
@@ -579,6 +622,7 @@ void MalletModel::computeFluid (int i)
 
 void MalletModel::retune (bool fluid)
 {
+    if (sp.box) { retuneBox(); return; }        // V2: a wooden pipe
     const MetalProps& mt = metalProps (sp.metal);
     // material and geometry may have moved (not the choice of modes)
     E = mt.E; nu = mt.nu; rhoS = mt.rho; etaInt = mt.eta;
@@ -595,8 +639,13 @@ void MalletModel::retune (bool fluid)
     const HeadProps& hd = headProps (sp.head);
     const double Rh = 0.5 * std::max (0.004, sp.headD);
     mh = hd.rho * 4.0 / 3.0 * kPi * Rh * Rh * Rh + kStickMass;
-    const double Es = 1.0 / ((1.0 - hd.nu * hd.nu) / hd.E + (1.0 - nu * nu) / E);
-    Kh = 4.0 / 3.0 * Es * std::sqrt (std::sqrt (Rh * (Rh * a / (Rh + a))));
+    if (hd.K > 0) Kh = hd.K;
+    else
+    {
+        const double Es = 1.0 / ((1.0 - hd.nu * hd.nu) / hd.E + (1.0 - nu * nu) / E);
+        Kh = 4.0 / 3.0 * Es * std::sqrt (std::sqrt (Rh * (Rh * a / (Rh + a))));
+    }
+    pC = hd.p;
     eRest = hd.e;
 
     const double wRef = std::sqrt (E / (rhoS * (1.0 - nu * nu))) / a;
@@ -625,6 +674,191 @@ void MalletModel::retune (bool fluid)
         if (fluid) computeFluid (i);
     }
     if (fluid) { spFluid = sp; framesSinceFluid = 0; }
+    for (int i = 0; i < nSel; ++i) discretise (i);
+    cModes = 0;
+    for (int i = 0; i < nSel; ++i) cModes += wq[i] * g1i[i];
+    spTuned = sp;
+    framesSinceBC = 0;
+}
+
+/* ------------------------------------------------------- V2: a wooden box */
+/* the front board for the current parameters: a flat-sawn board (grain L along the pipe, T across it, R through it),
+   its bending stiffnesses (orthotropic thin plate: D11 = E_L h^3 / 12 (1 - nu_LT nu_TL), D22 the same with E_T,
+   D12 = nu_LT D22, D66 = G_LT h^3 / 12), and the mallet's Hertz contact with its face (E_R, nu_RT through it) */
+void MalletModel::boxPlate()
+{
+    const WoodProps& wd = woodProps (sp.wood);
+    bW = std::max (0.002, sp.width);
+    a = 0.5 * bW;
+    Lb = std::max (sp.L, 2.0 * bW);
+    h = std::max (1e-4, woodWallThickness (bW) * sp.wall);
+    rhoS = wd.rho;
+    ms = rhoS * h;
+    etaInt = wd.eta;
+    const double EL = wd.EL, ET = wd.ETL * EL, G = wd.GLTL * EL, nuTL = wd.nuLT * ET / EL;
+    const double h3 = h * h * h, den = 12.0 * (1.0 - wd.nuLT * nuTL);
+    D11 = EL * h3 / den;
+    D22 = ET * h3 / den;
+    D12 = wd.nuLT * D22;
+    D66 = G * h3 / 12.0;
+    ePerp = wd.ERL * EL;
+    nuPerp = wd.nuRT;
+    E = ePerp; nu = nuPerp;
+    kk = 0; mTip = 0; teDelta = 0; teTau = 0;
+    const HeadProps& hd = headProps (sp.head);
+    const double Rh = 0.5 * std::max (0.004, sp.headD);
+    mh = hd.rho * 4.0 / 3.0 * kPi * Rh * Rh * Rh + kStickMass;
+    if (hd.K > 0) Kh = hd.K;
+    else
+    {
+        const double Es = 1.0 / ((1.0 - hd.nu * hd.nu) / hd.E + (1.0 - nuPerp * nuPerp) / ePerp);
+        Kh = 4.0 / 3.0 * Es * std::sqrt (Rh);          // a sphere on a flat face
+    }
+    pC = hd.p;
+    eRest = hd.e;
+}
+
+/* simply supported orthotropic plate (Leissa, Vibration of Plates, NASA SP-160): w_mn = pi^2 sqrt ((D11 (m/L)^4 +
+   2 (D12 + 2 D66) (m/L)^2 (n/b)^2 + D22 (n/b)^4) / (rho h)) */
+double MalletModel::boxW (int m, int n) const
+{
+    const double x = m / Lb, yy = n / bW;
+    return kPi * kPi * std::sqrt ((D11 * x * x * x * x + 2.0 * (D12 + 2.0 * D66) * x * x * yy * yy + D22 * yy * yy * yy * yy) / ms);
+}
+
+void MalletModel::designBox()
+{
+    boxPlate();
+    const double Deq = std::sqrt (D11 * D22);                 // the point impedance of an orthotropic plate, 8 sqrt (D rho h)
+    const double tauHertz = contactTime (mh, Kh, pC);
+    const double tauEst = std::max (tauHertz, mh / (8.0 * std::sqrt (Deq * ms)));
+    const double wMax = kTwoPi * std::min (20000.0, 0.45 * fs);    // every mode up to the top of hearing (as design())
+    const double Mm = ms * Lb * bW / 4.0;                     // modal mass of sin sin (peak 1)
+    const double xs = sp.strike;
+    thread_local static Cand cand[1200];
+    int nc = 0;
+    // the stroke is in the middle of the board's width: the even n have a node there
+    for (int n = 1; n < 400 && nc < 1150; n += 2)
+    {
+        if (boxW (1, n) >= wMax) break;
+        const double sn = (n & 2) ? -1.0 : 1.0;              // sin (n pi / 2)
+        for (int m = 1; m < 2000 && nc < 1150; ++m)
+        {
+            const double w = boxW (m, n);
+            if (w >= wMax) break;
+            if (w < kTwoPi * 15.0) continue;
+            Cand& c = cand[nc++];
+            c.n = n; c.m = m; c.br = 0; c.bc = 0; c.ws = w; c.radial = 1.0; c.mass = Mm;
+            c.vec[0] = c.vec[1] = 0.0; c.vec[2] = 1.0;
+            c.phiS = std::sin (m * kPi * xs) * sn;
+            // what it gives the far field: the odd-odd modes have a net volume (monopole), the others hardly radiate
+            const double Aphi = (m & 1) ? (2.0 * Lb / (m * kPi)) * (2.0 * bW / (n * kPi)) : 0.0;
+            const double wt = w * tauEst / kPi;
+            const double t60 = 2.0 * 6.91 / ((etaInt + 1e-4) * w);
+            c.score = Aphi > 0 ? 2.0 * (std::log (sp.rho0 * w * Aphi / (4.0 * kPi)) + std::log (std::abs (c.phiS) + 1e-9) - std::log (Mm)
+                                        - std::log (1.0 + wt * wt)) + std::log (t60)
+                               : -1e30;
+            c.compl_ = c.phiS * c.phiS / (Mm * w * w);
+        }
+    }
+    nCand = nc;
+    std::sort (cand, cand + nc, [] (const Cand& x, const Cand& y) { return x.score > y.score; });
+    const int nRad = std::min (nc, kMaxModes - 16);
+    std::sort (cand + nRad, cand + nc, [] (const Cand& x, const Cand& y) { return x.compl_ > y.compl_; });
+    const int nKeep = std::min (nc, kMaxModes);
+
+    double oldZr[kMaxModes], oldZi[kMaxModes], oldWd[kMaxModes], oldSig[kMaxModes];
+    int oldKey[kMaxModes];
+    const int oldN = nActive;
+    for (int i = 0; i < oldN; ++i)
+    {
+        oldZr[i] = zr[i]; oldZi[i] = zi[i];
+        oldWd[i] = std::sqrt (std::max (w0[i] * w0[i] - sigma[i] * sigma[i], 1e-6));
+        oldSig[i] = sigma[i];
+        oldKey[i] = mn[i] * 4096 + mm[i] * 4 + mbc[i];
+    }
+    // the give under the mallet of the modes left out (those chosen against, and those above hearing like a plate)
+    cRes = 1.0 / (4.0 * kPi * wMax * std::sqrt (Deq * ms));
+    for (int i = nKeep; i < nc; ++i) cRes += cand[i].compl_;
+    nSel = nKeep;
+    for (int i = 0; i < nSel; ++i)
+    {
+        const Cand& c = cand[i];
+        mn[i] = c.n; mm[i] = c.m; mbc[i] = 0;
+        wS[i] = c.ws; radial[i] = 1.0; mass[i] = c.mass; phiS[i] = c.phiS;
+        ax[i] = 1.0; fluidRatio[i] = 1.0; etaRad[i] = 0.0; fBend[i] = 0.0;
+        zr[i] = zi[i] = 0.0;
+    }
+    for (int i = nSel; i < kMaxModes; ++i)
+    {
+        zr[i] = zi[i] = pr[i] = pim[i] = g0r[i] = g0i[i] = g1r[i] = g1i[i] = wq[i] = oa[i] = ob[i] = oF[i] = 0.0;
+        gAbs[i] = 0;
+    }
+    spDesigned = sp;
+    designed = true;
+    nActive = 0;
+    retuneBox();
+    int restored = 0;
+    for (int i = 0; i < nSel && oldN > 0; ++i)
+    {
+        const int key = mn[i] * 4096 + mm[i] * 4 + mbc[i];
+        for (int j = 0; j < oldN; ++j)
+            if (oldKey[j] == key)
+            {
+                const double q = oldZi[j] / oldWd[j], qd = oldZr[j] - oldSig[j] * q;
+                const double wd = std::sqrt (std::max (w0[i] * w0[i] - sigma[i] * sigma[i], 1e-6));
+                zi[i] = wd * q; zr[i] = qd + sigma[i] * q;
+                ++restored;
+                break;
+            }
+    }
+    nActive = restored > 0 ? nSel : 0;
+}
+
+void MalletModel::retuneBox()
+{
+    boxPlate();
+    const double Mm = ms * Lb * bW / 4.0;
+    for (int i = 0; i < nSel; ++i)
+    {
+        const int m = mm[i], n = mn[i];
+        const double sn = (n & 2) ? -1.0 : 1.0;
+        wS[i] = boxW (m, n);
+        radial[i] = 1.0; ax[i] = 1.0; fBend[i] = 0.0; fluidRatio[i] = 1.0;
+        mass[i] = Mm;
+        phiS[i] = std::sin (m * kPi * sp.strike) * sn;
+        const double xd = std::sin (m * kPi * kDamperPos) * sn;
+        sigD[i] = kDamperC * sp.damper * xd * xd / (2.0 * Mm);
+        // its outer face radiates its net volume velocity as a monopole (1 m): p = rho / (4 pi) d/dt (A_phi dq/dt),
+        // inward (the force's direction) positive; its radiation damping is the power that takes
+        const double Aphi = (m & 1) ? (2.0 * Lb / (m * kPi)) * (2.0 * bW / (n * kPi)) : 0.0;
+        const double w = wS[i];
+        etaRad[i] = sp.rho0 * w * Aphi * Aphi / (4.0 * kPi * sp.c0 * Mm);
+        gAbs[i] = sp.rho0 * w * Aphi / (4.0 * kPi);
+        gArg[i] = 0.5 * kPi;
+    }
+    // the air the board pushes into the bore per newton (quasi-static, below its first mode): its static volume
+    // compliance at the stroke, sum over the odd-odd modes of phi(stroke) A_phi / (M w^2)
+    {
+        // (the terms fall as 1 / (m n^5) and faster: n < 16, m < 160 leave well under 0.1 %; sin (m pi x) by recurrence)
+        const double th = kPi * sp.strike, c2 = 2.0 * std::cos (2.0 * th), k4 = kPi * kPi * kPi * kPi / ms;
+        double cv = 0.0;
+        for (int n = 1; n < 16; n += 2)
+        {
+            const double sn = (n & 2) ? -1.0 : 1.0, yy = n / bW, y2 = yy * yy;
+            double sPrev = -std::sin (th), s = std::sin (th);        // sin (-th), sin (th)
+            for (int m = 1; m < 160; m += 2)
+            {
+                const double x = m / Lb, x2 = x * x;
+                const double w2 = k4 * (D11 * x2 * x2 + 2.0 * (D12 + 2.0 * D66) * x2 * y2 + D22 * y2 * y2);
+                cv += s * sn * (4.0 * Lb * bW / (kPi * kPi * m * n)) / (Mm * w2);
+                const double sNext = c2 * s - sPrev;
+                sPrev = s; s = sNext;
+            }
+        }
+        cVol = std::max (0.0, cv);
+    }
+    spFluid = sp; framesSinceFluid = 0;
     for (int i = 0; i < nSel; ++i) discretise (i);
     cModes = 0;
     for (int i = 0; i < nSel; ++i) cModes += wq[i] * g1i[i];
@@ -670,6 +904,10 @@ void MalletModel::discretise (int i)
     const double ca = std::cos (gArg[i]), sa = std::sin (gArg[i]);
     oa[i] = gAbs[i] * ca;
     ob[i] = gAbs[i] * (sa * w - ca * sg) / wd;
+    /* v2.0: the reactive (sin) part of the radiation follows the wall's acceleration, -q'' = w^2 q + 2 sigma q' - phi F / M;
+       oa, ob carry the free mode's part, this the force's own (a mode pushed far below its resonance, as a soft head does,
+       moves with the force and radiates only what its acceleration is, not w^2 times its displacement) */
+    oF[i] = -gAbs[i] * sa / w * f;
     // same displacement and velocity under the new pole
     zi[i] = wd * qOld;
     zr[i] = qdOld + sg * qOld;
@@ -688,11 +926,13 @@ void MalletModel::setParams (const StrikeParams& p)
                             || sp.metal != spTuned.metal || sp.head != spTuned.head || moved (sp.headD, spTuned.headD, 1e-5)
                             || std::abs (sp.strike - spTuned.strike) > 1e-5 || std::abs (sp.morph - spTuned.morph) > 1e-5
                             || std::abs (sp.damper - spTuned.damper) > 1e-5 || moved (sp.tempK, spTuned.tempK, 1e-5)
-                            || moved (sp.c0, spTuned.c0, 1e-5) || moved (sp.rho0, spTuned.rho0, 1e-5);
+                            || moved (sp.c0, spTuned.c0, 1e-5) || moved (sp.rho0, spTuned.rho0, 1e-5)
+                            || sp.box != spTuned.box || sp.wood != spTuned.wood || moved (sp.width, spTuned.width, 1e-5);
     const bool fluidMoved = moved (sp.L, spFluid.L, 2e-3) || moved (sp.d, spFluid.d, 2e-3) || moved (sp.c0, spFluid.c0, 2e-3)
                             || moved (sp.rho0, spFluid.rho0, 2e-3) || moved (sp.wall, spFluid.wall, 5e-3) || sp.metal != spFluid.metal
                             || std::abs (sp.morph - spFluid.morph) > 2e-3;
     if (! nActive && ! flight) return;      // silent: brought up to date at the next stroke
+    if (sp.box != spDesigned.box) return;  // V2: another kind of body: its modes come with the next stroke
     // retune at most every 4 blocks while a knob moves, the gas side every 16
     if (structural && framesSinceBC >= 4) retune (fluidMoved && framesSinceFluid >= 16);
     else if (fluidMoved && framesSinceFluid >= 16) retune (true);
@@ -705,7 +945,8 @@ void MalletModel::strike (double v0)
     const bool redesign = ! designed || sp.metal != spDesigned.metal || sp.head != spDesigned.head || far (sp.L, spDesigned.L, 0.03)
                           || far (sp.d, spDesigned.d, 0.03) || far (sp.wall, spDesigned.wall, 0.05) || far (sp.headD, spDesigned.headD, 0.1)
                           || std::abs (sp.strike - spDesigned.strike) > 0.02 || std::abs (sp.morph - spDesigned.morph) > 0.05
-                          || far (sp.c0, spDesigned.c0, 0.05);
+                          || far (sp.c0, spDesigned.c0, 0.05)
+                          || sp.box != spDesigned.box || sp.wood != spDesigned.wood || far (sp.width, spDesigned.width, 0.03);
     if (redesign) design();
     else
     {
@@ -752,7 +993,9 @@ void MalletModel::render (int n, double* shell, double* q)
         }
     }
     const int na = (nActive + 1) & ~1;              // pairs (a silent slot rotates zeros)
-    const double cV = a * a / (E * h);               // volume pushed in by the wall per newton (a long tube: a^2 / (E h))
+    const double cV = sp.box ? cVol : a * a / (E * h);    // volume pushed in by the wall per newton (a long tube: a^2 / (E h); V2: the board's)
+    double oFs = 0.0;                               // v2.0: the force's own share of the radiation (while the mallet pushes)
+    if (flight) for (int k = 0; k < na; ++k) oFs += oF[k];
     for (int t = 0; t < n; ++t)
     {
         if (flight)
@@ -775,6 +1018,7 @@ void MalletModel::render (int n, double* shell, double* q)
                 if (! inContact)
                 {
                     // first touch: Hunt-Crossley (Lankarani-Nikravesh) damping for the coefficient of restitution
+                    // (the same for any exponent p of the contact law)
                     vIn = std::max (0.01, (dFree - delta) * fs);
                     lamHC = 3.0 * (1.0 - eRest * eRest) / (4.0 * vIn);
                 }
@@ -782,8 +1026,18 @@ void MalletModel::render (int n, double* shell, double* q)
                 x = dFree;
                 for (int it = 0; it < 40; ++it)
                 {
-                    const double sx = std::sqrt (x), dmp = 1.0 + lamHC * (x - delta) * fs;
-                    double f = Kh * x * sx * dmp, df = Kh * (1.5 * sx * dmp + x * sx * lamHC * fs);
+                    const double dmp = 1.0 + lamHC * (x - delta) * fs;
+                    double f, df;
+                    if (pC == 1.5)
+                    {
+                        const double sx = std::sqrt (x);
+                        f = Kh * x * sx * dmp; df = Kh * (1.5 * sx * dmp + x * sx * lamHC * fs);
+                    }
+                    else
+                    {
+                        const double xq = std::pow (x, pC - 1.0);        // V2: a wool head, F = K x^p
+                        f = Kh * x * xq * dmp; df = Kh * (pC * xq * dmp + x * xq * lamHC * fs);
+                    }
                     if (f < 0) { f = 0; df = 0; }
                     const double g = x + C * f - dFree;
                     if (g > 0) hi = x; else lo = x;
@@ -793,7 +1047,7 @@ void MalletModel::render (int n, double* shell, double* q)
                     x = xn;
                     if (done) break;
                 }
-                Fn = std::max (0.0, Kh * x * std::sqrt (x) * (1.0 + lamHC * (x - delta) * fs));
+                Fn = std::max (0.0, Kh * (pC == 1.5 ? x * std::sqrt (x) : std::pow (x, pC)) * (1.0 + lamHC * (x - delta) * fs));
             }
             for (int k = 0; k < na; ++k)
             {
@@ -824,7 +1078,7 @@ void MalletModel::render (int n, double* shell, double* q)
                 flight = false; inContact = false; F = 0;
                 if (contacts == 1 && tContactLast == 0 && contactStart >= 0) tContactLast = clock - contactStart;
             }
-            double out = 0;
+            double out = oFs * Fn;
             for (int k = 0; k < na; ++k) out += oa[k] * zr[k] + ob[k] * zi[k];
             shell[t] = out;
         }
@@ -854,7 +1108,7 @@ void MalletModel::render (int n, double* shell, double* q)
                 if (k != last)
                 {
                     auto sw = [&] (auto* arr) { std::swap (arr[k], arr[last]); };
-                    sw (zr); sw (zi); sw (pr); sw (pim); sw (g0r); sw (g0i); sw (g1r); sw (g1i); sw (wq); sw (oa); sw (ob);
+                    sw (zr); sw (zi); sw (pr); sw (pim); sw (g0r); sw (g0i); sw (g1r); sw (g1i); sw (wq); sw (oa); sw (ob); sw (oF);
                     sw (mn); sw (mm); sw (mbc); sw (w0); sw (wS); sw (sigma); sw (sigD); sw (mass); sw (phiS);
                     sw (radial); sw (fluidRatio); sw (etaRad); sw (fBend); sw (gAbs); sw (gArg); sw (ax);
                 }
@@ -876,6 +1130,7 @@ void MalletModel::fillTelemetry (MalletTelemetry& t) const
     t.tContact = (float) tContactLast;
     t.h = (float) h;
     t.K = (float) Kh;
+    t.p = (float) pC;
     t.mass = (float) mh;
     // force record: the first forceN samples, shown over at most 2 x the contact time
     const int span = std::max (8, std::min (forceN, tContactLast > 0 ? (int) (2.0 * tContactLast * fs) + 4 : forceN));
@@ -892,7 +1147,14 @@ void MalletModel::fillTelemetry (MalletTelemetry& t) const
         const double wd = std::sqrt (std::max (w0[k] * w0[k] - sigma[k] * sigma[k], 1e-6));
         const double qk = zi[k] / wd;
         if (mn[k] < MalletTelemetry::kRing) t.ring[mn[k]] += (float) (phiS[k] * qk);
-        if (mn[k] == 1)
+        if (sp.box)
+        {
+            // V2: the board's deflection along the middle of its width, mouth -> top
+            const double sn = (mn[k] & 2) ? -1.0 : 1.0;
+            for (int j = 0; j < MalletTelemetry::kBend; ++j)
+                t.bend[j] += (float) (std::sin (mm[k] * kPi * j / (double) (MalletTelemetry::kBend - 1)) * sn * qk);
+        }
+        else if (mn[k] == 1)
         {
             const BeamFn bf (lam[0][mm[k] - 1]);
             for (int j = 0; j < MalletTelemetry::kBend; ++j) t.bend[j] += (float) (bf.X (j / (double) (MalletTelemetry::kBend - 1)) * qk);

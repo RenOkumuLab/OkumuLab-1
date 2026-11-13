@@ -34,6 +34,25 @@ juce::String midiText (uint32_t m)
 } // namespace
 
 // =================================================================== knob
+void KnobResetButton::paintButton (juce::Graphics& g, bool over, bool down)
+{
+    const auto r = getLocalBounds().toFloat().reduced (0.5f);
+    g.setColour (down ? cyan2 : (over ? cyan.withAlpha (0.16f) : (lit ? cyan.withAlpha (0.07f) : juce::Colours::transparentBlack)));
+    g.fillRoundedRectangle (r, 2.0f);
+    g.setColour (over ? cyan2 : (lit ? rule2 : rule));
+    g.drawRoundedRectangle (r, 2.0f, 1.0f);
+    // the web screen's icon (16 x 16 units): an open circle turning anticlockwise and its arrowhead
+    juce::Path p;
+    p.addCentredArc (8.0f, 8.0f, 4.6f, 4.6f, 0.0f, juce::degreesToRadians (265.0f), juce::degreesToRadians (-41.0f), true);
+    p.startNewSubPath (4.1f, 1.9f);
+    p.lineTo (4.7f, 5.3f);
+    p.lineTo (8.1f, 4.7f);
+    const float sz = juce::jmin (r.getWidth(), r.getHeight()) * 0.75f;
+    p.applyTransform (juce::AffineTransform::scale (sz / 16.0f).translated (r.getCentreX() - 0.5f * sz, r.getCentreY() - 0.5f * sz));
+    g.setColour (down ? bg0 : (over ? fg : (lit ? cyan : dim2)));
+    g.strokePath (p, juce::PathStrokeType (1.3f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+}
+
 OklKnob::OklKnob (OkumuLabProcessor& p, int index, bool large) : proc (p), idx (index), big (large)
 {
     const ParamDef& d = kParamDefs[idx];
@@ -47,11 +66,26 @@ OklKnob::OklKnob (OkumuLabProcessor& p, int index, bool large) : proc (p), idx (
     slider.addListener (this);
     addAndMakeVisible (slider);
     attach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, d.id, slider);
-    slider.setDoubleClickReturnValue (true, d.def);
     lastValue = (float) slider.getValue();
     ccText = proc.controllerText (idx);
     slider.setTooltip (juce::String::fromUTF8 (d.name) + "  (" + juce::String::fromUTF8 (d.tag) + ")\n"
                        + "Right-click: MIDI learn / forget / default.  Double-click: default.");
+    // v1.1.1: the knob's own RESET button, at the right of its value
+    resetBtn.onClick = [this] { proc.resetParameter (idx); };
+    addAndMakeVisible (resetBtn);
+    setDefault (proc.paramDefault (idx));
+    resetBtn.setLit (std::abs (toNorm (d, lastValue) - toNorm (d, defShown)) > 1e-6);
+}
+
+/* V2: the default of the stop in use: the mark on the scale, double-click, the RESET button's tooltip */
+void OklKnob::setDefault (double def)
+{
+    const ParamDef& d = kParamDefs[idx];
+    defShown = def;
+    slider.getProperties().set ("defPos", (float) toNorm (d, def));
+    slider.setDoubleClickReturnValue (true, def);
+    resetBtn.setTooltip ("RESET: " + juce::String::fromUTF8 (d.name) + " back to its default (" + fmt (d, def) + ")");
+    slider.repaint();
 }
 
 OklKnob::~OklKnob()
@@ -75,6 +109,8 @@ void OklKnob::resized()
     r.removeFromBottom (big ? 30 : 27);
     const int sz = juce::jmin (r.getWidth() - 6, r.getHeight());
     slider.setBounds (r.withSizeKeepingCentre (sz, sz));
+    const int rb = big ? 14 : 13;                        // the RESET button: right end of the value line
+    resetBtn.setBounds (getWidth() - rb - 1, getHeight() - (big ? 30 : 27) + 1, rb, rb);
 }
 
 void OklKnob::paint (juce::Graphics& g)
@@ -87,7 +123,9 @@ void OklKnob::paint (juce::Graphics& g)
     auto bottom = r.removeFromBottom (big ? 30.0f : 27.0f);
     g.setColour (fg);
     g.setFont (mono (big ? 13.0f : 12.0f, true));
-    g.drawText (fmt (d, slider.getValue()), bottom.removeFromTop (big ? 16.0f : 15.0f), juce::Justification::centred, true);
+    auto valueR = bottom.removeFromTop (big ? 16.0f : 15.0f);
+    valueR.removeFromRight ((float) resetBtn.getWidth() + 2.0f);       // (the RESET button)
+    g.drawFittedText (fmt (d, slider.getValue()), valueR.toNearestInt(), juce::Justification::centred, 1, 0.7f);
     g.setColour (ccText.isNotEmpty() ? cyan2 : dim2);
     g.setFont (mono (9.5f));
     g.drawText ((ccText.isNotEmpty() ? ccText + " · " : juce::String()) + juce::String::fromUTF8 (d.tag), bottom, juce::Justification::centred, true);
@@ -108,19 +146,13 @@ void OklKnob::showMenu()
     m.addItem (1, learning ? "Cancel MIDI learn" : "MIDI learn (move a controller)");
     m.addItem (2, "Forget controller", ccText.isNotEmpty() && ! ccText.startsWith ("PB"));
     m.addSeparator();
-    m.addItem (3, "Reset to default (" + fmt (d, d.def) + ")");
+    m.addItem (3, "Reset to default (" + fmt (d, defShown) + ")");
     m.addItem (4, "Default controller map (MiniLab 3)");
     m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&slider), [this, learning] (int r) {
         auto& rt = proc.midi();
         if (r == 1) rt.learnParam.store (learning ? -1 : idx);
         else if (r == 2) { for (auto& c : rt.ccMap) if (c.load() == idx) c.store (-1); }
-        else if (r == 3)
-        {
-            auto* p = proc.param (idx);
-            p->beginChangeGesture();
-            p->setValueNotifyingHost (p->getDefaultValue());
-            p->endChangeGesture();
-        }
+        else if (r == 3) proc.resetParameter (idx);
         else if (r == 4) rt.resetCcMap();
         ccText = proc.controllerText (idx);
         repaint();
@@ -146,6 +178,8 @@ void OklKnob::tick (const Telemetry& t, bool learning)
     }
     slider.getProperties().set ("hot", hot);
     if (dirty) repaint();
+    if (const double def = proc.paramDefault (idx); def != defShown) setDefault (def);
+    resetBtn.setLit (std::abs (toNorm (d, v) - toNorm (d, defShown)) > 1e-6);
     const bool wasLearning = (bool) slider.getProperties().getWithDefault ("learn", false);
     const bool blink = learning && (juce::Time::getMillisecondCounter() / 300) % 2 == 0;
     if (learning || wasLearning)
@@ -238,6 +272,14 @@ NativeEditor::NativeEditor (OkumuLabProcessor& p)
     content.addAndMakeVisible (excite);
     excite.setBounds (kW - 12 - 132 - 8 - 150, 578, 150, 22);
     exciteAttach = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, "excite", excite);
+
+    // V2: the stop (a program: every knob to that stop as built)
+    for (int s = 0; s < kNumStops; ++s) stopBox.addItem (juce::String::fromUTF8 (kStopNames[s]).toUpperCase(), s + 1);
+    stopBox.setSelectedId (proc.currentStop() + 1, juce::dontSendNotification);
+    stopBox.onChange = [this] { if (stopBox.getSelectedId() - 1 != proc.currentStop()) proc.setCurrentProgram (stopBox.getSelectedId() - 1); };
+    stopBox.setTooltip ("Stop: the Prinzipal 8' (round metal, open) or the Gedackt 8' (wood, stopped); every knob goes to the stop as built");
+    content.addAndMakeVisible (stopBox);
+    stopBox.setBounds (kW - 12 - 132 - 8 - 150 - 8 - 150, 578, 150, 22);
 
     // on-screen keyboard (plays like channel 1; the Standalone can be tried without a controller)
     keyboard.setAvailableRange (24, 108);
@@ -360,7 +402,8 @@ void NativeEditor::paintHeader (juce::Graphics& g, juce::Rectangle<float> r)
     g.drawText ("OkumuLab 1", juce::Rectangle<float> (14, 6, 260, 34), juce::Justification::centredLeft);
     g.setColour (cyan2);
     g.setFont (mono (10.0f));
-    g.drawText (juce::String::fromUTF8 ("LABIUM · PRINZIPAL 8′ · FLUE PIPE PHYSICAL MODEL · v") + JucePlugin_VersionString,
+    g.drawText (juce::String::fromUTF8 ("LABIUM · ") + juce::String::fromUTF8 (kStopNames[proc.currentStop()]).toUpperCase()
+                    + juce::String::fromUTF8 (" · FLUE PIPE PHYSICAL MODEL · v") + JucePlugin_VersionString,
                 juce::Rectangle<float> (16, 38, 420, 14), juce::Justification::centredLeft);
 
     // status chips
@@ -429,9 +472,15 @@ void NativeEditor::paintStatus (juce::Graphics& g, juce::Rectangle<float> r)
         struct Row { juce::String k, v; };
         std::vector<Row> rows;
         const int mi = (int) proc.apvts.getRawParameterValue ("metal")->load(), hi = (int) proc.apvts.getRawParameterValue ("head")->load();
-        rows.push_back ({ "Pipe metal", juce::String::fromUTF8 (metalProps (mi).name) });
+        const int wi = (int) proc.apvts.getRawParameterValue ("wood")->load();
+        const bool wooden = focus ? tel.focusStop == STOP_GEDACKT : proc.currentStop() == STOP_GEDACKT;
+        if (wooden) rows.push_back ({ "Pipe wood", juce::String::fromUTF8 (woodProps (wi).name) });
+        else rows.push_back ({ "Pipe metal", juce::String::fromUTF8 (metalProps (mi).name) });
         rows.push_back ({ "Mallet head", juce::String::fromUTF8 (headProps (hi).name) + "  " + juce::String (ml.mass * 1000.0f, 1) + " g" });
-        rows.push_back ({ "Wall / diameter", focus ? juce::String (ml.h * 1000.0f, 2) + " mm / " + juce::String (tel.d * 1000.0f, 1) + " mm" : "-" });
+        if (wooden)
+            rows.push_back ({ "Board / width x depth", focus ? juce::String (ml.h * 1000.0f, 1) + " mm / " + juce::String (tel.H * 1000.0f, 1) + " x "
+                                                               + juce::String (tel.depth * 1000.0f, 1) + " mm" : "-" });
+        else rows.push_back ({ "Wall / diameter", focus ? juce::String (ml.h * 1000.0f, 2) + " mm / " + juce::String (tel.d * 1000.0f, 1) + " mm" : "-" });
         rows.push_back ({ "Stroke", ml.strikes > 0 ? juce::String (ml.v0, 2) + " m/s  " + juce::String (ml.fPeak, 1) + " N  " + juce::String (ml.tContact * 1000.0f, 3) + " ms" : "-" });
         rows.push_back ({ "Modes ringing", juce::String (ml.nActive) + " / " + juce::String (ml.nModes) });
         rows.push_back ({ "Air column (passive)", focus ? juce::String (tel.fres, 1) + " Hz" : "-" });
@@ -603,6 +652,7 @@ void NativeEditor::timerCallback()
         for (int i = 0; i < NX_SNAP; ++i) boreShown[i] += (tel.boreP[i] - boreShown[i]) * 0.35f;
     }
     showMalletPanel (proc.apvts.getRawParameterValue ("excite")->load() > 0.5f);
+    if (stopBox.getSelectedId() != proc.currentStop() + 1) stopBox.setSelectedId (proc.currentStop() + 1, juce::dontSendNotification);
     const int learn = proc.midi().learnParam.load();
     for (auto& k : knobs) k->tick (tel, learn == k->index());
     content.repaint (headerR.toNearestInt());
@@ -614,7 +664,20 @@ void NativeEditor::timerCallback()
     {
         ++frames;
         const int note = juce::SystemStats::getEnvironmentVariable ("OKL_SNAPSHOT_NOTE", "60").getIntValue();
+        // V2: OKL_SNAPSHOT_STOP=1: the Gedackt selected first
+        if (frames == 10 && juce::SystemStats::getEnvironmentVariable ("OKL_SNAPSHOT_STOP", {}).isNotEmpty())
+            proc.setCurrentProgram (juce::SystemStats::getEnvironmentVariable ("OKL_SNAPSHOT_STOP", {}).getIntValue());
         if (frames == 20) proc.keyboardState.noteOn (1, note, 0.8f);
+        // OKL_SNAPSHOT_MOVE=cutup=1.4,y0b=1: knobs moved before the picture (their RESET buttons light up)
+        if (frames == 30)
+            for (const auto& kv : juce::StringArray::fromTokens (juce::SystemStats::getEnvironmentVariable ("OKL_SNAPSHOT_MOVE", {}), ",", {}))
+                if (const int i = paramIndex (kv.upToFirstOccurrenceOf ("=", false, false).trim().toRawUTF8()); i >= 0)
+                {
+                    auto* p = proc.param (i);
+                    p->beginChangeGesture();
+                    p->setValueNotifyingHost (p->convertTo0to1 (kv.fromFirstOccurrenceOf ("=", false, false).getFloatValue()));
+                    p->endChangeGesture();
+                }
         if (frames == 100)
         {
             const auto img = content.createComponentSnapshot (content.getLocalBounds(), true, 1.0f);

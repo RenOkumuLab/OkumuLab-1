@@ -3,21 +3,42 @@
 
 OkumuLab 1 is a highly experimental, innovative and avant-garde virtual organ VST3 plugin.
 
-It is a physical model of an organ flue pipe (Prinzipal 8'), made with JUCE 8 as a VST3 instrument and a standalone app for Windows, macOS and Linux (on macOS also as an Audio Unit). The screen uses the system's web view (WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux) and Three.js, and draws the jet, the standing wave inside the pipe and the vibration of the pipe wall exactly as the sound engine computes them.
+It is a physical model of organ flue pipes (two stops: Prinzipal 8' and Gedackt 8'), made with JUCE 8 as a VST3 instrument and a standalone app for Windows, macOS and Linux (on macOS also as an Audio Unit). The screen uses the system's web view (WebView2 on Windows, WKWebView on macOS, WebKitGTK on Linux) and Three.js, and draws the jet, the standing wave inside the pipe and the vibration of the pipe wall exactly as the sound engine computes them.
 
-- Version 1.1.0, vendor name OkumuLab
+- Version 2.0.0, vendor name OkumuLab
 - Formats: VST3 and standalone (Windows x64, Linux x86-64); VST3, Audio Unit and standalone (macOS 10.15 or later, Apple silicon and Intel)
 <img width="1266" height="792" alt="スクリーンショット 2026-10-08 154201" src="https://github.com/user-attachments/assets/d39dea1d-3336-4553-88fe-ee4d444414aa" />
 
 ## Features
 
-- In WIND mode the pipe sounds from the wind blown into it. In MALLET mode you strike the pipe body with a mallet.
-- The keyboard covers the full MIDI range from 0 to 127, and each key plays a pipe with its own dimensions.
-- There are 19 experimental recipes (DAW programs) and a modulation matrix with 4 slots.
+- Two stops, chosen in the menu at the top (they are also the DAW's programs): the Prinzipal 8' (round organ metal, open) and the Gedackt 8' (wood, stopped).
+- In WIND mode the pipe sounds from the wind blown into it. In MALLET mode you strike the pipe body with a mallet: the metal Prinzipal rings as a thin cylindrical shell, the wooden Gedackt as the boards of a box.
+- The keyboard covers MIDI 24 to 96 (C, to c⁴), and each key plays a pipe with its own dimensions. Other notes sound nothing.
+- The organ plays in equal temperament at a¹ = 440 Hz unless you choose one of six historical temperaments, another a¹ (380 to 480 Hz) or a Scala scale. The TUNING button in the top bar, beside the stop menu, shows the tuning in use and opens the panel where it is set.
+- A modulation matrix with 4 slots.
 - The reverb convolves the sound with an impulse response computed for the nave of a church.
-- Every knob is a DAW parameter. Right-click a knob for MIDI learn, and double-click it to return to the default value. The default mapping matches the knobs, faders and pads of the Arturia MiniLab 3.
+- Every knob is a DAW parameter. Right-click a knob for MIDI learn. To return one knob to its default value, press the RESET button (↺) at the right of its row, or double-click the knob; the RESET button in the top bar returns them all. The default mapping matches the knobs, faders and pads of the Arturia MiniLab 3.
 
 The details of the physical model, the MIDI mapping and the test results are in [docs/DEVELOPMENT_NOTES_ja.md](docs/DEVELOPMENT_NOTES_ja.md) (in Japanese).
+
+## What's new in 2.0.0
+
+- **A second stop: the Gedackt 8'.** A stopped wooden pipe built from the literature. The scale is Dickson's English Stopped Diapason (1882: C 82.5 × 101.6 mm inside, tenor C 54.0 × 66.7 mm, the section halving every 19.7 half-tones), and the mouth is as wide as the inside. The cut-up follows Janke's rule for a Gedackt (5 half-tones above the norm cut-up at the house-organ wind pressure the plugin plays at). From g up it was then voiced by ear, key by key: about x1.46 from g to f#¹, x1.58-1.61 from g¹ to f#², x1.53-1.61 from g² to g³ and x1.41-1.46 from g#³ to c⁴. The flue is as wide as on real wooden pipes (1 mm at 47 mm inside width and 0.6 mm at 9 mm, from the BDO's pipe and Fischer et al.'s Schuke stopped pipe; 1.19 mm at C). The mouth adds Fletcher & Rossing's end correction of a high mouth and the air in the mouth cut through the front board. The wall loss is that of a rectangular bore, with the excess measured on wooden pipes (Rucz et al. 2023). A stopper tunes each pipe, as organ builders tune a Gedackt. The upper lip sits on the jet's centre plane (Labium offset 0 b; Fletcher & Douglas 1980), so the tone has the odd partials of a stopped pipe. The only even partials come from the Bernoulli term of the jet drive (Fletcher 1976) and lie about 70 dB below the fundamental. The twelfth is about 14 dB below the fundamental at c¹ and 27 dB below it at c². An arched cut-up makes the tone rounder, and moving the Labium offset brings even partials in.
+- **Open/Stopped draws the stopper.** On the Gedackt the knob starts at Stopped (100 %); turning it toward Open draws the leather-sealed stopper out of the top, on the screen too, and the pipe rises toward the octave (a little flat, as an open end of that body is).
+- **Side ears and an arched cut-up.** Two new knobs in VOICING. The ears' air plug lengthens the mouth's end correction (the pipe a few cents flatter). Under an arched (semicircular) upper lip the jet crosses the mouth in strips of different lengths, which rounds the tone. Both start at 0 % on both stops (no ears, a straight cut-up).
+- **The struck wooden pipe.** In MALLET mode the Gedackt's front board is an orthotropic plate of the chosen wood (white oak by default; also red pine, Sitka spruce, western red cedar, from the Wood Handbook).
+- **A yarn mallet.** Mallet head adds Yarn (wool wound on a rubber core), for both stops. Wool does not follow Hertz's law: it is a power law F = K x^p, here the felt mallet of Bilbao, Torin & Chatziioannou (2015, after Rhaouti, Chaigne & Joly 1999), K = 1.6e8 N/m^2.54, p = 2.54. It stays on the wall several times longer than the other heads, and the stroke is soft and dark. It is the last in the list, so saved settings keep their heads.
+- **Tuning.** The TUNING button in the top bar, beside the stop menu, shows the temperament and a¹ in use and opens the TUNING panel. It lights amber while the organ is not in equal temperament at 440 Hz. The panel has two new knobs: Temperament (equal, Pythagorean, 1/4-comma meantone, Werckmeister III, Kirnberger III, Vallotti, Young, or Custom) and Pitch a¹ (380–480 Hz). The historical temperaments are computed from their circles of fifths. The panel also loads a Scala scale (.scl) and a keyboard mapping (.kbm), read with the Surge Synth Team's tuning-library (MIT), and Custom plays them. A .scl or .kbm file dropped anywhere on the screen is loaded too, and the files are saved in the project. A tuned key sounds the pipe of the nearest equal-tempered key, its body cut to the tuned length, as an organ builder tunes it. Equal temperament at 440 Hz changes nothing, and choosing another stop keeps the tuning.
+- **The stop menu takes the place of the experiment recipes.** Choosing a stop sets every knob to that stop as built. The RESET buttons return to the defaults of the stop in use (Open/Stopped, scale, mouth and wall loss differ).
+- **MIDI 24 to 96** on both stops. The Prinzipal's blown sound in that range is the same as in 1.1.x.
+- **Struck walls without a cut-off.** In MALLET mode the wall's modes used to be taken only below 12 / (the contact time at 1 m/s), a cut made for speed. With a soft head the wall then fell silent from one key to the next (the yarn Gedackt dropped 23 dB between c¹ and d¹). Every mode below 20 kHz is now a candidate, and the contact force decides how much each one rings. While the mallet pushes, a mode radiates by its acceleration, so a mode pushed far below its resonance no longer radiates the force itself. The Prinzipal below c¹ sounds as before. Above c¹, and on the Gedackt everywhere, the struck sound changed (the yarn Gedackt is about 12 dB softer in the bass).
+- The Gedackt's lowest key, C, (32.7 Hz), is at the edge of speech at the reference wind: it fades slowly. Cut-up ×0.90 (or more wind) makes it steady.
+- With the cut-up arched, a Gedackt pipe takes about twice the CPU of a Prinzipal pipe (the jet in strips). On the laptop it was developed on (Ryzen 5 3500U), 16 such pipes take about 60 % of one core and 32 more than one core. At the default 0 % it is as light as the Prinzipal.
+
+## What's new in 1.1.1
+
+- **A RESET button for every parameter.** Each row with a slider (and each knob of the simple native screen) has a small RESET button (↺) at its right that returns that parameter alone to its default. It lights up while the value is off the default. The RESET button in the top bar still returns every parameter at once. The host sees each press as one parameter change.
+- The sound engine is the same as in 1.1.0.
 
 ## What's new in 1.1.0
 
@@ -73,8 +94,8 @@ On Ubuntu or Debian the packages are `ninja-build pkg-config libasound2-dev libj
 
 ### Tests
 
-- `build-dsp/labium_check [section]`: tests of the sound engine. The sections are port, derive, midi, pitchlock, wind, blocks, tone, cpu, stress, mallet, room, lab and simd. Without a section, all of them run. On Linux run it with a larger stack (`ulimit -s unlimited`).
-- `build/okl_hosttest_artefacts/Release/okl_hosttest`: loads the built VST3 the way a DAW does and plays it, including tests with the plugin window open.
+- `build-dsp/labium_check [section]`: tests of the sound engine. The sections are port, derive, midi, pitchlock, wind, blocks, tone, cpu, stress, mallet, room, lab, simd, gedackt and tuning. Without a section, all of them run. On Linux run it with a larger stack (`ulimit -s unlimited`). `labium_check kcalgen` prints the Gedackt's tuning table (`src/dsp/KcalTableGedackt.inc`).
+- `build/okl_hosttest_artefacts/Release/okl_hosttest`: loads the built VST3 the way a DAW does and plays it, including tests with the plugin window open. `--state-save <older.vst3> <file>` and then `--state-load <file>` open a project saved with an older build in this one.
 - To validate the plugin with pluginval (Tracktion), get pluginval separately. It is not included in this repository.
 
 ### Environment variables for testing

@@ -19,6 +19,7 @@ namespace okl
 namespace
 {
 #include "KcalTable.inc"
+#include "KcalTableGedackt.inc"
 
 constexpr double R_GAS = 8.314462618;
 constexpr double kPLin = 0.5;        // [Pa] orifice flow is linear below this pressure difference (P3)
@@ -159,10 +160,14 @@ void baseParams (const PipeDesign& pd, double kcal, ParamVec& v)
     v[P_ONSET_T] = 15.0;
     v[P_KICK] = -0.5;
     v[P_VFOLLOW] = 0.0;
-    v[P_FDESIGN] = pd.f0;
+    // (v2.0: the Gedackt's cut-up follows the resonance from the one it was built for, its stopper's quarter wave
+    // c / 4 Leff = f0 / kcal: the pipe as built is voiced as designed. f0 alone shrank its large mouth correction by the
+    // stopper's setting and sharpened the treble, 41 cents at c4 with Dickson's scale)
+    v[P_FDESIGN] = pd.stop == 1 ? pd.f0 / kcal : pd.f0;
     v[P_EXCITE] = 0.0; v[P_METAL] = 1.0; v[P_WALL] = 1.0; v[P_HEAD] = 1.0; v[P_HEADD] = 25.0;
     v[P_STRIKE] = 0.3; v[P_DAMPER] = 0.6; v[P_TEMPK] = 293.15;
     v[P_NICK] = 0.0; v[P_FMTGT] = 0.0; v[P_CROSS] = 0.0; v[P_HOLE] = 0.0;
+    v[P_STOP] = pd.stop; v[P_DEPTH] = pd.stop == 1 ? pd.depth : pd.d; v[P_EARS] = 0.0; v[P_ARCH] = 0.0; v[P_WOOD] = 0.0;
 }
 } // namespace
 
@@ -243,6 +248,96 @@ PipeDesign designPrinzipal (int midi)
     return r;
 }
 
+/* ---------------------------------------------------------- V2: Gedackt 8' */
+double gedacktScaleHT()
+{
+    const double dEq = 2.0 * std::sqrt (kGedacktWidthC * kGedacktDepthC / kPi);
+    return 16.0 * std::log2 (dEq / 0.1555);
+}
+
+double gedacktMouthFrac()
+{
+    const double dEq = 2.0 * std::sqrt (kGedacktWidthC * kGedacktDepthC / kPi);
+    return kGedacktWidthC / (kPi * dEq);
+}
+
+double mouthCorrection (bool fr, double d, double mouthW, double cutup, double ears)
+{
+    double M = fr ? 2.3 * (0.25 * d * d) / std::sqrt (mouthW * cutup) : 0.3 * d * d / cutup;
+    // v2.0: the wooden mouth is cut through the front board: the air in it, a neck as thick as the board, adds its mass
+    // rho t / S_m (Kinsler et al., the neck of a Helmholtz resonator), t the board (Rucz et al.: woodWallThickness), as
+    // a length of the bore t S / S_m
+    if (fr) M += woodWallThickness (mouthW) * (0.25 * kPi * d * d) / (mouthW * cutup);
+    if (ears > 0.0)
+    {
+        const double S = 0.25 * kPi * d * d, Sm = mouthW * cutup, am = std::sqrt (Sm / kPi);
+        M += ears * (S / Sm) * (0.8216 - 0.6133) * am * cutup / (mouthW + cutup);
+    }
+    return M;
+}
+
+/* the user's voicing, key by key from g (MIDI 55) to c4 (96): labium_check gfitkey (LabiumCore.h) */
+static constexpr double kGedacktCutVoicing[42] = {
+    1.468, 1.467, 1.466, 1.465, 1.464, 1.464, 1.463, 1.463, 1.463, 1.457, 1.457, 1.457,             // g .. f#1
+    1.607, 1.605, 1.604, 1.603, 1.600, 1.597, 1.595, 1.592, 1.589, 1.587, 1.583, 1.580,             // g1 .. f#2
+    1.605, 1.603, 1.597, 1.592, 1.588, 1.583, 1.578, 1.571, 1.563, 1.557, 1.549, 1.540, 1.532,      // g2 .. g3
+    1.456, 1.450, 1.442, 1.428, 1.410 };                                                            // g#3 .. c4
+
+double gedacktCutVoicing (int midi)
+{
+    if (midi <= 54) return 1.00;
+    return kGedacktCutVoicing[std::min (midi, 96) - 55];
+}
+
+PipeDesign designGedackt (int midi)
+{
+    const double pChestMMWS = 75.0, footRatio = 0.7;
+    /* Janke 2015: Gedackte sound typical and good cut up +6 .. +9 HT above the norm cut-up, and "at low wind pressures the
+       level of the cut-ups falls quickly by two to three half-tones". The reference wind, 500 Pa = 51 mmWS, is a house
+       organ's (his: 40-50 mmWS): +7.5 - 2.5 = +5 HT. His own house-organ Gedeckt 8' has C 35, c1 14, c3 5.2 mm; this
+       rule gives 37.9, 13.4, 4.7 mm. (+7.5 left the 16' octave below the threshold of speech at the reference wind.) */
+    const double cutHT = 5.0;
+    const GasProps g = gasProps (1.0, 0.0, 0.0, 20.0);
+    PipeDesign r;
+    r.midi = midi;
+    r.stop = 1;
+    r.f0 = midiToHz (midi);
+    const double k = midi - 36;
+    const double mouthFrac = gedacktMouthFrac();
+    r.d = 0.1555 * std::pow (2.0, gedacktScaleHT() / 16.0) * std::pow (2.0, -k / kGedacktHalving);    // equal-area diameter
+    r.mouthW = mouthFrac * kPi * r.d;                // the inside width: a wooden mouth spans it
+    r.depth = 0.25 * kPi * r.d * r.d / r.mouthW;    // (width : depth = 4 : 5 at every key)
+    r.ising = 0.0;
+    r.flue = kGedacktFlue47 * std::pow (r.mouthW / 0.047, kGedacktFlueExp);    // real wooden pipes (LabiumCore.h)
+    const double Sflue = r.flue * r.mouthW;
+    const double Stoe = Sflue / std::sqrt (1.0 / footRatio - 1.0);
+    r.toe = std::sqrt (4.0 * Stoe / kPi);
+    r.toeConst = std::pow (r.toe * 1e3, 2) / (4.0 * mouthFrac * r.d * 1e3);
+    r.pChest = pChestMMWS * MMWS;
+    r.pFoot = r.pChest / (1.0 + std::pow (Sflue / Stoe, 2));
+    // Janke's norm cut-up of the sounding pitch: the Normalmensur's diameter, mouth 1/4 of its circumference, cut-up 1/4 of
+    // the mouth (his example: C 2' 55 mm -> 10.8 mm)
+    const double dN = 0.1555 * std::pow (2.0, -k / 16.0);
+    r.cutup = std::pow (2.0, cutHT / 16.0) * kPi * dN / 16.0 * gedacktCutVoicing (midi);    // (v2.0: the user's voicing)
+    r.ising = std::sqrt (2.0 * r.pFoot * r.flue / (g.rho * r.cutup * r.cutup * r.cutup)) / r.f0;
+    r.M = mouthCorrection (true, r.d, r.mouthW, r.cutup, 0.0);     // v2.0: without ears (the Ears knob starts at 0; was with them)
+    /* stopped: a quarter wave, with the stopper where it tunes the pipe to its key at the reference wind (as a builder
+       sets it, Dickson 1882: tuned by the stopper): the factor of the pitch-lock calibration, which finds the length at
+       which the pipe as built speaks on its key (its slow jet pulls it flat by up to 60 cents in the treble) */
+    r.Leff = g.c / (4.0 * r.f0) * kcalForStop (1, midi);
+    r.lPhys = r.Leff - r.M;                          // (no end correction at the stopper)
+    r.footLen = kGedacktFootPerWidth * r.mouthW;     // the block and the turned foot below it, toe to mouth
+    r.footVol = kPi / 12.0 * r.footLen * (r.d * r.d + r.d * r.toe + r.toe * r.toe);
+    r.Uj = std::sqrt (2.0 * r.pFoot / g.rho);
+    r.c = g.c; r.rho = g.rho; r.gamma = g.gamma; r.mu = g.mu;
+    return r;
+}
+
+PipeDesign designStop (int stop, int midi)
+{
+    return stop == 1 ? designGedackt (midi) : designPrinzipal (midi);
+}
+
 double kcalFor (double midi)
 {
     static double xs[kKcalCount];
@@ -255,13 +350,34 @@ double kcalFor (double midi)
     return interp (midi, xs, kKcal, kKcalCount);
 }
 
-void voiceParams (int midi, const Globals& G, const VoiceOverride& vo, const PipeDesign& pd, ParamVec& v)
+double kcalForStop (int stop, double midi)
 {
-    baseParams (pd, kcalFor (midi), v);
+    if (stop != 1) return kcalFor (midi);
+    static double xs[kKcalGCount];
+    static bool init = false;
+    if (! init)
+    {
+        for (int i = 0; i < kKcalGCount; ++i) xs[i] = kKcalGFirst + i;
+        init = true;
+    }
+    return interp (midi, xs, kKcalG, kKcalGCount);
+}
+
+void voiceParams (int midi, const Globals& G, const VoiceOverride& vo, const PipeDesign& pd, ParamVec& v, double tuneSemis)
+{
+    baseParams (pd, kcalForStop (pd.stop, midi), v);
     const double k = midi - 36;
-    const double d = 0.1555 * std::pow (2.0, -(k - G.scaleHT) / 16.0);
+    const bool ged = pd.stop == 1;
+    // V2: the Gedackt's scale halves every 20 half-tones (Janke); the Scale knob shifts it as the Prinzipal's (16 HT per halving)
+    const double d = ged ? 0.1555 * std::pow (2.0, G.scaleHT / 16.0) * std::pow (2.0, -k / kGedacktHalving)
+                         : 0.1555 * std::pow (2.0, -(k - G.scaleHT) / 16.0);
     v[P_D] = d;
     v[P_MOUTHW] = G.mouthFrac * kPi * d;
+    // V2: a rectangular body keeps its area: a wider mouth makes it shallower
+    v[P_DEPTH] = ged ? 0.25 * kPi * d * d / v[P_MOUTHW] : d;
+    v[P_EARS] = std::clamp (G.ears, 0.0, 1.0);
+    v[P_ARCH] = std::clamp (G.arch, 0.0, 1.0);
+    v[P_WOOD] = std::clamp (std::round (G.wood), 0.0, (double) (kNumWoods - 1));
     v[P_CUTUP] = pd.cutup * G.cutup;
     v[P_Y0] = G.y0b * 0.4 * pd.flue;
     v[P_TOE] = pd.toe * G.toe;
@@ -272,7 +388,7 @@ void voiceParams (int midi, const Globals& G, const VoiceOverride& vo, const Pip
     v[P_MORPH] = std::clamp (G.morph, 0.0, 1.0);
     v[P_PLOCK] = std::clamp (G.pitchLock, 0.0, 1.0);
     v[P_VFOLLOW] = G.vFollow;
-    const double s = G.glide;
+    const double s = G.glide + tuneSemis;          // (v2.0: a tuned pipe is cut to its pitch, as the glide cuts it)
     const double corr = pd.Leff - pd.lPhys;
     v[P_LPHYS] = pd.Leff * std::pow (2.0, -s / 12.0) - corr;
     v[P_FTARGET] = pd.f0 * std::pow (2.0, s / 12.0);
@@ -318,14 +434,15 @@ void derive (const double* p, double fs, Derived& dv, bool phase1)
     const double H = p[P_MOUTHW];
     double W = p[P_CUTUP];
     const double morph = std::clamp (p[P_MORPH], 0.0, 1.0);
+    const bool ged = p[P_STOP] > 0.5;         // V2: the Gedackt (rectangular, designed stopped)
 
     double M = 0, Leff = 0, fres = 0;
     for (int pass = 0; pass < 2; ++pass)
     {
-        /* mouth end correction: M ~ 0.3 d^2 / W */
-        M = 0.3 * d * d / W;
-        const double LphysEff = p[P_LPHYS] + M + 0.3 * d * (1.0 - morph);
-        const double Llock = c / (2.0 * p[P_FTARGET]) * p[P_KCAL];
+        /* mouth end correction: M ~ 0.3 d^2 / W (V2: Fletcher & Rossing for the Gedackt's high cut-up; ears add their air plug) */
+        M = mouthCorrection (ged, d, H, W, p[P_EARS]);        const double LphysEff = p[P_LPHYS] + M + 0.3 * d * (1.0 - morph);
+        // (V2: the Gedackt is held on its key as built, stopped: a quarter wave)
+        const double Llock = c / ((ged ? 4.0 : 2.0) * p[P_FTARGET]) * p[P_KCAL];
         Leff = (1.0 - p[P_PLOCK]) * LphysEff + p[P_PLOCK] * Llock;
         if (Leff < 0.005) Leff = 0.005;
         fres = c / (2.0 * Leff) * (1.0 - 0.5 * morph);
@@ -344,7 +461,7 @@ void derive (const double* p, double fs, Derived& dv, bool phase1)
     double holeR = 1.0, holeX = 0.0;
     if (p[P_HOLE] > 0.02)
     {
-        const double bh = 0.24 * a, tw = wallThickness (d) * p[P_WALL];        // the hole of Voice::render, fully open
+        const double bh = 0.24 * a, tw = (ged ? woodWallThickness (H) : wallThickness (d)) * p[P_WALL];        // the hole of Voice::render, fully open
         const double q = bh * bh / (a * a * (tw + 1.45 * bh));
         const double x0 = W + 1.2 * H, x1 = std::max (x0, p[P_LPHYS] - 1.2 * a);
         const double LphysEff = p[P_LPHYS] + M + 0.3 * d * (1.0 - morph);
@@ -360,16 +477,20 @@ void derive (const double* p, double fs, Derived& dv, bool phase1)
     dv.holeR = holeR;
     dv.holeX = holeX;
 
-    /* loss filter: first-order shelf fitted to the wall's round-trip loss at f1, 3 f1, 9 f1 (V11: the radiation follows below) */
+    /* loss filter: first-order shelf fitted to the wall's round-trip loss at f1, 3 f1, 9 f1 (V11: the radiation follows below).
+       V2: the Gedackt's at its own resonances (stopped: f1 is half the open pipe's), and its delay is taken out there */
     const double am = std::sqrt (H * W / kPi);
-    const double f1 = c / (2.0 * Leff);
+    const double f1 = ged ? c / (2.0 * Leff) * (1.0 - 0.5 * morph) : c / (2.0 * Leff);
     double fa[3] { f1, 3.0 * f1, 9.0 * f1 };
     bool clamped = false;
     for (int i = 0; i < 3; ++i) if (fa[i] > 0.4 * fs) { fa[i] = 0.4 * fs * (0.6 + 0.2 * i); clamped = true; }
     double Gt[3], cw[3];
+    // V2: a rectangular bore loses in proportion to its perimeter over its area: the radius of the theory is 2 S / P
+    // (= W D / (W + D); Rucz et al. 2023: (sqrt e + 1 / sqrt e) / sqrt pi times the round pipe of the same area)
+    const double aW = ged ? H * p[P_DEPTH] / (H + p[P_DEPTH]) : a;
     for (int i = 0; i < 3; ++i)
         Gt[i] = phase1 ? lossGainPhase1 (fa[i], a, am, Leff, c, p[P_RHO], p[P_GAMMA], p[P_MU], p[P_LOSS], morph)
-                       : wallGain (fa[i], a, Leff, c, p[P_RHO], p[P_GAMMA], p[P_MU], p[P_LOSS]);
+                       : wallGain (fa[i], aW, Leff, c, p[P_RHO], p[P_GAMMA], p[P_MU], p[P_LOSS]);
     cw[0] = std::cos (kTwoPi * fa[0] / fs);
     if (! clamped)
     {
@@ -538,9 +659,13 @@ void derive (const double* p, double fs, Derived& dv, bool phase1)
            b2 = sqrt(beta) tau^2, b1^2 = tau^2 + 2 b2 (no overshoot: Q < 0.71), bilinear, prewarped at x = 1. Its delay at f1
            joins the shelf's (the bore is shortened by both); the upper harmonics see less of it, so their resonances go
            slightly sharp, as the shrinking end correction of a real open end makes them. */
-        const double tau = std::sqrt ((1.0 - morph) * a * a + am * am) / c;
+        /* V2: the Gedackt's mouth radiates the bore's own volume flow as a simple source, so it loses what an open end of
+           the bore's (equal-area) radius loses, 0.5 (ka)^2 (the radiated power rho c k^2 |U|^2 / 8 pi does not depend on
+           the opening's size while k am << 1). The Prinzipal keeps the mouth's own radius, as tuned in Phase 1 */
+        const double amR = ged ? a : am;
+        const double tau = std::sqrt ((1.0 - morph) * a * a + amR * amR) / c;
         const double k2 = 2.0 / (tau * c);                                   // k at x = 2
-        const double G2 = std::pow (rUnflanged (k2 * a), 1.0 - morph) * rUnflanged (k2 * am);
+        const double G2 = std::pow (rUnflanged (k2 * a), 1.0 - morph) * rUnflanged (k2 * amR);
         const double beta = std::max (0.0, (1.0 / (G2 * G2) - 5.0) / 16.0);
         const double b2 = std::sqrt (beta) * tau * tau, b1 = tau * std::sqrt (1.0 + 2.0 * std::sqrt (beta));
         const double wp = std::min (1.0 / tau, 0.45 * kTwoPi * fs);
@@ -565,10 +690,13 @@ void derive (const double* p, double fs, Derived& dv, bool phase1)
     }
     /* mouth window = lumped inertance (time constant M/c) */
     dv.taum = M / c;
-    /* open <-> stopped morph: crossover frequency from Nyquist down to 5 Hz (recomputed only when it moves) */
-    if (morph != dv.morphFor || fs != dv.fsFor)
+    /* open <-> stopped morph: crossover frequency from Nyquist down to 5 Hz (recomputed only when it moves).
+       V2: the Gedackt's stopper down to 0.02 Hz: at 5 Hz the stopped top of a 32.7 Hz pipe still reflected with a phase
+       lead of 17 degrees (the pipe a semitone sharp); at 0.02 Hz its fundamental is within a cent of a rigid end */
+    if (morph != dv.morphFor || fs != dv.fsFor || (ged ? 1.0 : 0.0) != dv.stopFor)
     {
-        const double fx = 0.5 * fs * std::pow (5.0 / (0.5 * fs), morph);
+        const double fx = 0.5 * fs * std::pow ((ged ? 0.02 : 5.0) / (0.5 * fs), morph);
+        dv.stopFor = ged ? 1.0 : 0.0;
         const double t = std::tan (std::min (kPi * fx / fs, kPi / 2.0 - 1e-9));
         dv.aMorph = (t - 1.0) / (t + 1.0);
         dv.morphFor = morph;
@@ -631,6 +759,8 @@ void Voice::reset()
     qin_prev = 0; dq_lp = 0; vm = 0;
     lsh_x1 = lsh_y1 = dc_x1 = dc_y1 = 0;
     apm_x1 = apm_y1 = mq_prev = mu_prev = 0;
+    apt_x1 = apt_y1 = 0;
+    bn_x1 = bn_y1 = 0;
     vj = vj2 = 0; jl1 = jl2 = 0; gate_on = 0; onset_t = 0; kick_t = -1;
     rx1 = rx2 = ry1 = ry2 = 0;
     um_prev = ut_prev = nz = phi = 0;
@@ -643,6 +773,9 @@ void Voice::reset()
     holePrevDh = holePrevDt = -1;
     holeA = holeB = holeI2Y0 = 0; holeGLow = 1.0; holeDh = 2;
     jitA = 1.0; jitGd = 0.0;
+    stripsOn = false;
+    for (int k = 0; k < kStrips; ++k) { sTau[k] = -1.0; sTauStep[k] = sVj[k] = sVj2[k] = 0.0; }
+    sQwPrev = sDqw = 0.0;
     s1x1 = s1x2 = s1y1 = s1y2 = s2x1 = s2x2 = s2y1 = s2y2 = 0;
     rawMean = eRaw = eBp = eN = 0; evalLen = 0.03 * fs; settle = 0; rawLp = 0; kRawLp = 1;
     lowShare = 0; scanIdx = -1; scanBest = 0; scanBestShare = 0; irregular = 0;
@@ -686,7 +819,8 @@ void Voice::nextFrame()
         const double tj = T[(size_t) j];
         const double bo = B[(size_t) j];
         double bj;
-        if (j == P_GATE || j == P_PALLET_TAU || j == P_FMF || j == P_EXCITE || j == P_METAL || j == P_HEAD || j == P_FMTGT) bj = tj;     // the pallet model smooths the gate; choices jump
+        if (j == P_GATE || j == P_PALLET_TAU || j == P_FMF || j == P_EXCITE || j == P_METAL || j == P_HEAD || j == P_FMTGT
+            || j == P_STOP || j == P_WOOD) bj = tj;     // the pallet model smooths the gate; choices jump
         else
         {
             bj = bo + (tj - bo) * a;
@@ -730,6 +864,8 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
     double pgL = pg, pfL = pf, UjL = Uj, vmL = vm;
     double qin_prevL = qin_prev, dq_lpL = dq_lp, lsh_x1L = lsh_x1, lsh_y1L = lsh_y1, dc_x1L = dc_x1, dc_y1L = dc_y1;
     double apm_x1L = apm_x1, apm_y1L = apm_y1, mq_prevL = mq_prev, mu_prevL = mu_prev, vjL = vj, vj2L = vj2;
+    double apt_x1L = apt_x1, apt_y1L = apt_y1;
+    double bn_x1L = bn_x1, bn_y1L = bn_y1, bnKL = bnK;
     double kick_tL = kick_t, um_prevL = um_prev, ut_prevL = ut_prev, nzL = nz, phiL = phi, tauL = tau;
     double dlineL = dline, dlineStepL = dlineStep, tauStepL = tauStep;
     uint32_t rngL = rng;
@@ -741,6 +877,15 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
     const double kdq = k_dq, knz = k_nz, fsL = fs, jitL = jetJitter;
     double jl1L = jl1, jl2L = jl2, jitAL = jitA, jitGdL = jitGd;
     double rx1L = rx1, rx2L = rx2, ry1L = ry1, ry2L = ry2, rb0L = rb0, rb1L = rb1, rb2L = rb2, ra1L = ra1, ra2L = ra2;
+    // V2: the jet's strips under an arched cut-up (locals for the block, as above)
+    bool stripsL = stripsOn;
+    double sTauL[kStrips], sTauStepL[kStrips], sVjL[kStrips], sVj2L[kStrips], sHGL[kStrips], sInvbL[kStrips], sBHL[kStrips], sY0L[kStrips], sLipL[kStrips], sPjKL[kStrips];
+    for (int s = 0; s < kStrips; ++s)
+    {
+        sTauL[s] = sTau[s]; sTauStepL[s] = sTauStep[s]; sVjL[s] = sVj[s]; sVj2L[s] = sVj2[s]; sHGL[s] = sHG[s]; sInvbL[s] = sInvb[s];
+        sBHL[s] = sBH[s]; sY0L[s] = sY0[s]; sLipL[s] = sLip[s]; sPjKL[s] = sPjK[s];
+    }
+    double sQwPrevL = sQwPrev, sDqwL = sDqw;
 
     /* MALLET: the wall and the mallet for the whole block first (the air column does not push back on the wall);
        the bore then takes the wall's breathing at the strike point, and the wall's radiation joins the output */
@@ -803,6 +948,7 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
             H = A[P_MOUTHW];
             SpipeL = kPi * d * d / 4.0;
             SpSmL = SpipeL / (H * W);
+            bnKL = A[P_STOP] > 0.5 ? rho / (SpipeL * SpipeL) : 0.0;      // (the Gedackt only)
             SflueL = h * H;
             StoeL = kPi * A[P_TOE] * A[P_TOE] / 4.0;
             kf = (1.0 / (fsL * 4)) * rho * c * c / A[P_FOOTVOL];
@@ -875,6 +1021,51 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
             lipAmpL = 2.5 * bW;
             jetB = b; jetG = ampexp; jetY0 = y0cL;
             pjKL = -rho * (4.0 / kPi * std::sqrt (2.0 * h * W)) / (W * H);
+            /* V2: an arched cut-up. The upper lip is a semicircle over the mouth (a flatter semi-ellipse where the cut-up is too
+               low for one: the sides stay above x = 3 h + 7.67 bE, where the jet starts to spread), the cut-up W its mean
+               height, so the mouth's area and end correction stay those of the straight mouth. The jet crosses it in strips
+               (four distinct lengths, each pair mirrored about the middle): each its own travel time, spreading and growth,
+               its share of the mouth's flow; the jet drive is their sum, each with its own distance across the mouth. */
+            {
+                double rise = 0.0;
+                if (! phase1 && A[P_ARCH] > 0.0 && W > xs) rise = A[P_ARCH] * std::min (0.5 * H, (W - xs) / (0.25 * kPi));
+                const bool was = stripsL;
+                stripsL = rise > 1e-9 * W;
+                if (stripsL)
+                {
+                    // mean of sqrt(1 - x^2) over x in [s/n, (s+1)/n], n strips across each half (their average is pi / 4)
+                    static const std::array<double, kStrips> kArc = [] {
+                        std::array<double, kStrips> a {};
+                        auto F = [] (double u) { return 0.5 * (u * std::sqrt (std::max (0.0, 1.0 - u * u)) + std::asin (std::min (u, 1.0))); };
+                        for (int s = 0; s < kStrips; ++s) a[(size_t) s] = kStrips * (F ((s + 1.0) / kStrips) - F ((double) s / kStrips));
+                        return a;
+                    }();
+                    const double side = W - 0.25 * kPi * rise;
+                    double bHs = 0.0;
+                    for (int s = 0; s < kStrips; ++s)
+                    {
+                        const double Ws = side + kArc[(size_t) s] * rise;
+                        double tS = Ws / uc * fsL;
+                        if (! (tS >= 3.0)) tS = 3.0;
+                        if (tS > maxTau) tS = maxTau;
+                        if (! was || sTauL[s] < 0) sTauL[s] = tS;
+                        sTauStepL[s] = (tS - sTauL[s]) / CTRL;
+                        double bWs = bE, ae = 0.16 * Ws / bE;
+                        if (Ws > xs) { bWs = (Ws - 3.0 * h) / 7.67; ae = 0.16 * (xs / bE + 7.67 * std::log (bWs / bE)); }
+                        if (gate_on && A[P_ONSET_T] > 0) ae += A[P_ONSET_B] * std::exp (-onset_t / A[P_ONSET_T]);
+                        sHGL[s] = A[P_JETGAIN] * std::exp (ae) * h;
+                        sInvbL[s] = 1.0 / (nk * bWs);
+                        sBHL[s] = H / kStrips * std::sqrt (bE * bWs);
+                        sY0L[s] = A[P_Y0] * (bWs / bE);
+                        sLipL[s] = 2.5 * bWs;
+                        sPjKL[s] = -rho * (4.0 / kPi * std::sqrt (2.0 * h * Ws)) / (W * H);
+                        bHs += sBHL[s];
+                        if (! was) { sVjL[s] = vjL; sVj2L[s] = vj2L; }
+                    }
+                    bHL = bHs;
+                    if (! was) { sQwPrevL = pjKL * qin_prevL; sDqwL = pjKL * dq_lpL; }
+                }
+            }
             pvKL = -0.5 * rho / 0.36;
             kickL = gate_on ? A[P_KICK] : 0; kickArmL = 0.5 * A[P_PCHEST] * 0.3; kickStepL = fres / fsL;
             if (! gate_on) kick_tL = -1.0;
@@ -976,6 +1167,65 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
 
         /* ---- jet ---- */
         tauL += tauStepL;
+        double ps;
+        if (stripsL)
+        {
+            // V2: the jet in strips under the arched cut-up (same reads, filters, profile and drive as the single jet below).
+            // The strips' reads go side by side, tap by tap: four independent chains instead of one long one
+            double rd[kStrips];
+            for (int s = 0; s < kStrips; ++s) sTauL[s] += sTauStepL[s];
+            if (jitL > 0.0)
+            {
+                static constexpr double wj[7] { 0.0366, 0.1113, 0.2167, 0.2707, 0.2167, 0.1113, 0.0366 };
+                double pos0[kStrips], dls[kStrips];
+                for (int s = 0; s < kStrips; ++s)
+                {
+                    const double sd = jitL * sTauL[s], dl = sd * (2.0 / 3.0);
+                    const double c0 = std::max (3.0 + 3.0 * dl, std::min (sTauL[s] - jitGdL, maxTau - 3.0 * dl - 2.0));
+                    pos0[s] = (double) (vw + (int) vlen) - (c0 - 3.0 * dl);
+                    dls[s] = dl;
+                    rd[s] = 0.0;
+                }
+                for (int k = 0; k < 7; ++k)
+                    for (int s = 0; s < kStrips; ++s)
+                    {
+                        const double pos = pos0[s] - k * dls[s];
+                        const int i = (int) pos;
+                        const double a = vmB[i & vmask];
+                        rd[s] += wj[k] * (a + (vmB[(i + 1) & vmask] - a) * (pos - (double) i));
+                    }
+            }
+            else
+                for (int s = 0; s < kStrips; ++s)
+                {
+                    int i;
+                    double cf[4];
+                    lagr ((double) vw - sTauL[s], i, cf);
+                    rd[s] = cf[0] * vmB[(i - 1) & vmask] + cf[1] * vmB[i & vmask] + cf[2] * vmB[(i + 1) & vmask] + cf[3] * vmB[(i + 2) & vmask];
+                }
+            rngL ^= rngL << 13; rngL ^= rngL >> 17; rngL ^= rngL << 5;
+            nzL += ((2.0 * (rngL * (1.0 / 4294967296.0)) - 1.0) - nzL) * knz;
+            const double nzT = noiseAL * nzL, mInvUj = -1.0 / UjL;
+            double qs = 0.0, qw = 0.0, es = 0.0;
+            for (int s = 0; s < kStrips; ++s)
+            {
+                sVjL[s] += (rd[s] - sVjL[s]) * kjL;
+                sVj2L[s] += (sVjL[s] - sVj2L[s]) * kjL;
+                const double e = sHGL[s] * mInvUj * sVj2L[s] + nzT;
+                const double y0s = fmTgtL == 2 ? sY0L[s] + sLipL[s] * fmdL * fmS : sY0L[s];
+                const double q = sBHL[s] * UjFlow * (1.0 + fastTanh ((e - y0s) * sInvbL[s]));
+                qs += q; qw += sPjKL[s] * q; es += e;
+            }
+            eta = es / kStrips;
+            qin = qs;
+            dq_lpL += ((qin - qin_prevL) * fsL - dq_lpL) * kdq;      // (kept for a return to the straight mouth)
+            qin_prevL = qin;
+            sDqwL += ((qw - sQwPrevL) * fsL - sDqwL) * kdq;
+            sQwPrevL = qw;
+            ps = sDqwL;
+        }
+        else
+        {
         double vdelRaw;
         if (jitL > 0.0)
         {
@@ -1011,7 +1261,20 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
         const double dq = (qin - qin_prevL) * fsL;
         qin_prevL = qin;
         dq_lpL += (dq - dq_lpL) * kdq;
-        double ps = pjKL * dq_lpL;
+        ps = pjKL * dq_lpL;
+        }
+        /* v2.0: the Gedackt's Bernoulli term of the jet drive. The jet's momentum carried into the pipe drives it with
+           (p_p - p_m) = rho A (1 - A) Uj^2, A = S_j / S_p the share of the pipe's section the entering jet fills (Fletcher
+           1976, J. Acoust. Soc. Am. 60, 481, eq. 3). Its nonlinear part -rho Uj^2 A^2 = -rho (q_in / S_p)^2 (his (Q)_III)
+           adds a little second harmonic (and the higher ones) that does not depend on the lip's offset, so a lip on the
+           jet's centre plane leaves weak even partials (Fletcher & Douglas 1980). Its mean, a static pressure, is blocked */
+        if (bnKL > 0.0)
+        {
+            const double pB = -bnKL * qin * qin;
+            const double hp = pB - bn_x1L + 0.99995 * bn_y1L;
+            bn_x1L = pB; bn_y1L = hp;
+            ps += hp;
+        }
         if (gate_on) ps += pvKL * vmL * std::abs (vmL);          // vortex loss, labium_core.c form (previous sample's v)
         if (kickL != 0.0)
         {
@@ -1046,9 +1309,19 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
         /* open <-> stopped allpass. For an open top its coefficient is 1 - 2e-9: the identity, but with its pole at -1
            a Nyquist residue in its state (left by the morph moving) never died away, and the top radiated it (P5: found
            at -9 dBFS 25 s after a release). There it is the identity outright, with its state kept as that of one. */
-        double apm;
-        if (amL > 0.9999) { apm = dcb; apm_x1L = dcb; apm_y1L = dcb; }
-        else { apm = amL * dcb + apm_x1L - amL * apm_y1L; apm_x1L = dcb; apm_y1L = apm; }
+        double apm, topWave;
+        if (amL > 0.9999) { apm = dcb; apm_x1L = dcb; apm_y1L = dcb; topWave = pplusEnd + apm; }
+        else
+        {
+            apm = amL * dcb + apm_x1L - amL * apm_y1L; apm_x1L = dcb; apm_y1L = apm;
+            /* V2: the flow through a top that is (partly) stopped, from its reflection without the pipe's losses: the wall's
+               and the ends' losses are lumped into the top's reflection, and taken from it they appeared as a flow through
+               a closed stopper (a fully stopped Gedackt radiated its upper partials from the top, 22 dB below the mouth).
+               (Open, the identity above: as before) */
+            const double apt = amL * pplusEnd + apt_x1L - amL * apt_y1L;
+            apt_x1L = pplusEnd; apt_y1L = apt;
+            topWave = pplusEnd + apt;
+        }
         const double rTop = -apm;
 
         /* P3: after the pallet has closed the vortex loss -(rho/2)(v/0.6)^2 sgn v is solved implicitly
@@ -1133,7 +1406,7 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
         else vmB[vw] = vmIn;
         if (vmOutL) vmOutL[t] = vmL;
         vw = (vw + 1) & vmask;
-        const double ut = (pplusEnd - rTop) * invZcL;
+        const double ut = topWave * invZcL;
 
         /* ---- radiation (1 m, monopole) ---- */
         const double Um = um * SpipeL, Ut = ut * SpipeL;
@@ -1149,6 +1422,8 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
             std::fill (loB, loB + dlen, 0.0);
             std::fill (vmB, vmB + vlen, 0.0);
             apm_x1L = apm_y1L = mq_prevL = mu_prevL = vjL = vj2L = jl1L = jl2L = 0.0;
+            apt_x1L = apt_y1L = 0.0;
+            bn_x1L = bn_y1L = 0.0;
             lsh_x1L = lsh_y1L = dc_x1L = dc_y1L = rx1L = rx2L = ry1L = ry2L = 0.0;
             vmL = dq_lpL = 0.0;
             qin_prevL = 0.0;
@@ -1159,6 +1434,8 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
             om = ot = 0.0;
             s1x1 = s1x2 = s1y1 = s1y2 = s2x1 = s2x2 = s2y1 = s2y2 = zEnv = zPrev = 0.0;
             holeU = holeP = 0.0;
+            for (int s = 0; s < kStrips; ++s) { sVjL[s] = sVj2L[s] = 0.0; if (! (std::abs (sTauL[s]) <= 1e12)) sTauL[s] = -1.0; }
+            sQwPrevL = sDqwL = 0.0;
             ++resets;
         }
 
@@ -1234,6 +1511,13 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
     }
 
     up.setWritePos (dw); lo.setWritePos (dw); vml.setWritePos (vw);
+    stripsOn = stripsL;
+    for (int s = 0; s < kStrips; ++s)
+    {
+        sTau[s] = sTauL[s]; sTauStep[s] = sTauStepL[s]; sVj[s] = sVjL[s]; sVj2[s] = sVj2L[s]; sHG[s] = sHGL[s]; sInvb[s] = sInvbL[s];
+        sBH[s] = sBHL[s]; sY0[s] = sY0L[s]; sLip[s] = sLipL[s]; sPjK[s] = sPjKL[s];
+    }
+    sQwPrev = sQwPrevL; sDqw = sDqwL;
     holePrevDh = holePrevDhL; holePrevDt = holePrevDtL;
     holeA = holeAL; holeB = holeBL; holeI2Y0 = holeI2Y0L; holeGLow = holeGLowL; holeDh = holeDhL;
     jitA = jitAL; jitGd = jitGdL;
@@ -1241,6 +1525,8 @@ void Voice::render (int n, double* mixL, double* mixR, double* sig, double* host
     pg = pgL; pf = pfL; Uj = UjL; vm = vmL;
     qin_prev = qin_prevL; dq_lp = dq_lpL; lsh_x1 = lsh_x1L; lsh_y1 = lsh_y1L; dc_x1 = dc_x1L; dc_y1 = dc_y1L;
     apm_x1 = apm_x1L; apm_y1 = apm_y1L; mq_prev = mq_prevL; mu_prev = mu_prevL; vj = vjL; vj2 = vj2L; jl1 = jl1L; jl2 = jl2L;
+    apt_x1 = apt_x1L; apt_y1 = apt_y1L;
+    bn_x1 = bn_x1L; bn_y1 = bn_y1L; bnK = bnKL;
     kick_t = kick_tL; um_prev = um_prevL; ut_prev = ut_prevL; nz = nzL; phi = phiL; tau = tauL;
     dline = dlineL; dlineStep = dlineStepL; tauStep = tauStepL;
     rng = rngL;
@@ -1270,6 +1556,11 @@ StrikeParams Voice::strikeParams (const ParamVec& p) const
     s.c0 = p[P_C];
     s.rho0 = p[P_RHO];
     s.tempK = p[P_TEMPK];
+    // V2: a wooden box: its front board (the inside width across the grain) is struck
+    s.box = p[P_STOP] > 0.5;
+    s.width = p[P_MOUTHW];
+    s.depth = p[P_DEPTH];
+    s.wood = (int) std::lround (p[P_WOOD]);
     return s;
 }
 
@@ -1352,7 +1643,9 @@ void Voice::servoMeasure (double fMeas, double windowSec)
     const bool consistent = fPrevMeas > 0 && std::abs (fMeas / fPrevMeas - 1.0) < 0.01;
     fPrevMeas = fMeas;
     measuredRatio = cand;
-    measuredCents = 1200.0 * std::log2 (fMeas / (cand * A[P_FTARGET]));
+    // against the key's harmonic: the key is the open resonance of a Prinzipal, the stopped fundamental (1/2) of a Gedackt
+    // (V2: designed stopped, its open resonance is twice the key)
+    measuredCents = 1200.0 * std::log2 (fMeas / (cand * (A[P_STOP] > 0.5 ? 2.0 : 1.0) * A[P_FTARGET]));
     measuredLocked = std::abs (dev) < window && consistent;
     if (cand != regime && std::abs (dev) < window)
     {

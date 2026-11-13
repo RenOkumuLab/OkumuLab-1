@@ -86,10 +86,44 @@ using ScopedFpMode = fpenv::ScopedEngineMode;
 Engine::Engine()
 {
     const ScopedFpMode fp (false);
-    for (int m = 0; m < 128; ++m)
+    for (int s = 0; s < 2; ++s)
+        for (int m = 0; m < 128; ++m)
+        {
+            designs[(size_t) s][(size_t) m] = designStop (s, m);
+            learned[(size_t) s][(size_t) m] = 1200.0 * std::log2 (kcalForStop (s, m));
+        }
+}
+
+int Engine::stopOf (const Globals& g)
+{
+    return std::clamp ((int) std::lround (g.stop), 0, 1);
+}
+
+/* V2: another stop drawn while pipes sound: the old stop's pipes fall silent as they are (their pallets close; the knobs,
+   now the new stop's, no longer reach them), and the keys still held speak on the new stop */
+void Engine::changeStop (const Globals& g)
+{
+    struct Held { int id, midi, vel; bool sustained; VoiceOverride vo; };
+    std::array<Held, kMaxVoices> held {};
+    int nh = 0;
+    const bool struck = G.excite >= 0.5 || g.excite >= 0.5;
+    for (auto& v : voices)
     {
-        designs[(size_t) m] = designPrinzipal (m);
-        learned[(size_t) m] = 1200.0 * std::log2 (kcalFor (m));
+        if (! v.active || v.frozen) continue;
+        if (v.gate > 0 && ! struck) held[(size_t) nh++] = { v.id, v.midi, (int) std::lround (v.modVel * 127.0), v.held, v.vo };
+        v.gate = 0; v.held = false;
+        v.setDamper (true);
+        target (v, tmp);
+        v.setTarget (tmp);
+        v.frozen = true;
+        v.id = -1;
+    }
+    G = g;
+    for (int i = 0; i < nh; ++i)
+    {
+        const Held& h = held[(size_t) i];
+        noteOn (h.id, h.midi, std::max (1, h.vel), h.vo);
+        if (h.sustained) if (Voice* v = findVoice (h.id)) v->held = true;
     }
 }
 
@@ -140,11 +174,13 @@ void Engine::reset()
 
 void Engine::resetLearnedTuning()
 {
-    for (int m = 0; m < 128; ++m) learned[(size_t) m] = 1200.0 * std::log2 (kcalFor (m));
+    for (int s = 0; s < 2; ++s)
+        for (int m = 0; m < 128; ++m) learned[(size_t) s][(size_t) m] = 1200.0 * std::log2 (kcalForStop (s, m));
 }
 
 void Engine::setGlobals (const Globals& g)
 {
+    if (stopOf (g) != stopOf (G)) changeStop (g);
     G = g;
     gDirty = true;
 }
@@ -200,13 +236,17 @@ void Engine::modulated (const Voice& v, Globals& g) const
 
 void Engine::target (Voice& v, ParamVec& p) const
 {
+    // v2.0: the pipe of the key's tuned pitch: the canonical pipe of the nearest equal key, cut by the rest (Tuning.h)
+    double semis = 0.0, rest = 0.0;
+    if (keyTuning (G, custom, v.midi, semis)) rest = v.midi + semis - v.pipeKey;
+    const PipeDesign& pd = designs[(size_t) std::clamp (v.stop, 0, 1)][(size_t) (v.pipeKey & 127)];
     if (matrixOn())
     {
         Globals g;
         modulated (v, g);
-        voiceParams (v.midi, g, v.vo, designs[(size_t) v.midi], p);
+        voiceParams (v.pipeKey, g, v.vo, pd, p, rest);
     }
-    else voiceParams (v.midi, G, v.vo, designs[(size_t) v.midi], p);
+    else voiceParams (v.pipeKey, G, v.vo, pd, p, rest);
     p[P_GATE] = G.excite >= 0.5 ? 0.0 : v.gate;          // MALLET: no wind; the key only lifts the damper
     /* P5: the physical FM is the player's experiment while the pallet is open: it fades with the release (and a struck
        pipe has none). A bore whose length keeps moving at audio rate pumps its own resonance and would go on sounding
@@ -237,7 +277,12 @@ const Voice* Engine::focusVoice() const
 
 void Engine::noteOn (int id, int midi, int vel, const VoiceOverride& voIn)
 {
-    midi = std::clamp (midi, kMinNote, kMaxNote);
+    if (midi < kMinNote || midi > kMaxNote) return;     // V2: outside the compass there is no pipe
+    // v2.0: a key the tuning's mapping leaves out has no pipe either; the others sound the pipe of their pitch
+    double semis = 0.0, rest = 0.0;
+    if (! keyTuning (G, custom, midi, semis)) return;
+    const int pipeKey = pipeKeyFor (midi, semis, rest);
+    const int stop = stopOf (G);
     VoiceOverride vo = voIn;
     if (vo.tau <= 0.0)
     {
@@ -249,10 +294,11 @@ void Engine::noteOn (int id, int midi, int vel, const VoiceOverride& voIn)
     // P5: the note's own modulation sources
     modRng ^= modRng << 13; modRng ^= modRng >> 17; modRng ^= modRng << 5;
     const double rnd = 2.0 * (modRng * (1.0 / 4294967296.0)) - 1.0;
-    if (v && v->midi == midi)
+    if (v && v->midi == midi && v->stop == stop)
     {
         v->gate = 1; v->vo = vo; v->held = false; v->age = ++ageCounter;
         v->modVel = vel / 127.0; v->modRnd = rnd; v->modEnvT = 0; v->modOver = 0;
+        v->pipeKey = pipeKey;
         target (*v, tmp);
         v->setTarget (tmp);
         if (G.excite >= 0.5) strikeOrQueue (*v, malletSpeed (vel));       // MALLET: the same pipe again
@@ -262,7 +308,7 @@ void Engine::noteOn (int id, int midi, int vel, const VoiceOverride& voIn)
     if (v) { v->active = false; v->id = -1; }
     v = nullptr;
     // a free voice that last played this key first (MALLET: its modes are already worked out)
-    for (auto& x : voices) if (! x.active && x.midi == midi) { v = &x; break; }
+    for (auto& x : voices) if (! x.active && x.midi == midi && x.pipeKey == pipeKey && x.stop == stop) { v = &x; break; }
     if (! v) for (auto& x : voices) if (! x.active) { v = &x; break; }
     if (! v)
     {
@@ -274,11 +320,12 @@ void Engine::noteOn (int id, int midi, int vel, const VoiceOverride& voIn)
             if (score < bestScore) { bestScore = score; v = &x; }
         }
     }
-    v->id = id; v->midi = midi; v->vo = vo; v->gate = 1; v->held = false; v->age = ++ageCounter;
+    v->id = id; v->midi = midi; v->pipeKey = pipeKey; v->stop = stop; v->frozen = false; v->vo = vo; v->gate = 1; v->held = false;
+    v->age = ++ageCounter;
     v->modVel = vel / 127.0; v->modRnd = rnd; v->modEnvT = 0; v->modOver = 0;
     v->servoEnabled = servoEnabled;
     target (*v, tmp);
-    v->start (tmp, learned[(size_t) midi]);
+    v->start (tmp, learned[(size_t) stop][(size_t) pipeKey]);
     if (G.excite >= 0.5) strikeOrQueue (*v, malletSpeed (vel));
     focusId = id;
 }
@@ -355,7 +402,7 @@ void Engine::allOff (bool hard)
     {
         if (! v.active) continue;
         if (hard) { v.active = false; v.id = -1; }
-        else
+        else if (! v.frozen)
         {
             v.gate = 0; v.held = false;
             v.setDamper (true);
@@ -380,7 +427,7 @@ void Engine::processFtz (float* outL, float* outR, int n)
     {
         gDirty = false;
         for (auto& v : voices)
-            if (v.active) { target (v, tmp); v.setTarget (tmp); }
+            if (v.active && ! v.frozen) { target (v, tmp); v.setTarget (tmp); }
     }
     int done = 0;
     while (done < n)
@@ -460,7 +507,7 @@ void Engine::renderChunk (float* outL, float* outR, int n)
             if (v.quiet > fs * 0.15) { v.active = false; v.id = -1; }
         }
         else if (v.vo.wind < 0 && v.measuredLocked)
-            learned[(size_t) v.midi] = v.servoCents();      // P3: carry the tuning to the next note of this key
+            learned[(size_t) std::clamp (v.stop, 0, 1)][(size_t) (v.pipeKey & 127)] = v.servoCents();      // P3: carry the tuning to the next note of this pipe
         v.peakLevel = v.peak;
     }
     nActive = na;
@@ -569,6 +616,7 @@ void Engine::fillTelemetry (Telemetry& t)
         t.vox[t.nVox++] = { v.id, v.midi, (float) v.gate, (float) v.peakLevel, (float) v.pf, (uint32_t) v.age };
     }
     t.excite = G.excite >= 0.5 ? 1 : 0;
+    t.stop = stopOf (G);
     const Voice* fv = focusVoice();
     if (! fv) { t.focusGate = 0; t.focusMidi = -1; t.focusId = -1; t.mallet.nShown = 0; return; }
     fv->malletModel().fillTelemetry (t.mallet);
@@ -615,6 +663,11 @@ void Engine::fillTelemetry (Telemetry& t)
     t.M = (float) dv.M;
     t.dline = (float) dv.dline;
     t.kappa = (float) p[P_KAPPA];
+    t.focusStop = fv->stop;
+    t.depth = (float) p[P_DEPTH];
+    t.ears = (float) p[P_EARS];
+    t.arch = (float) p[P_ARCH];
+    t.wood = (int) p[P_WOOD];
     // V11: the jet where it meets the labium as the voice computed it (half-width, offset, growth exponent; ampcap carries
     // the growth exponent, which Phase 1 capped); before the voice's first frame, the flue's values
     if (fv->jetB > 0.0)

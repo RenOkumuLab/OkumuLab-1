@@ -8,7 +8,7 @@ set(CMAKE_NINJA_CMCLDEPS_RC OFF)
 # binary for Apple silicon and Intel Macs, configure with -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" (build.sh does)
 set(CMAKE_OSX_DEPLOYMENT_TARGET "10.15" CACHE STRING "Minimum macOS version")
 
-project(OkumuLab1 VERSION 1.1.0 LANGUAGES C CXX)
+project(OkumuLab1 VERSION 2.0.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -31,8 +31,11 @@ add_library(labium_dsp STATIC
     src/dsp/Reverb.cpp
     src/dsp/Presets.cpp
     src/dsp/Simd.cpp
-    src/dsp/SimdAvx2.cpp)
+    src/dsp/SimdAvx2.cpp
+    src/dsp/Tuning.cpp)
 target_include_directories(labium_dsp PUBLIC src/dsp)
+# v2.0: Scala .scl / .kbm (the Surge Synth Team's tuning-library, MIT, header only: third_party/tuning-library)
+target_include_directories(labium_dsp SYSTEM PRIVATE third_party/tuning-library/include)
 # linked into the plugin's shared module (VST3 .so on Linux)
 set_target_properties(labium_dsp PROPERTIES POSITION_INDEPENDENT_CODE ON)
 # P5: the AVX2 + FMA kernels (x86-64 only, chosen at run time, Simd.cpp); everything else stays SSE2. Other CPUs
@@ -109,8 +112,8 @@ juce_add_plugin(OkumuLab1
     COMPANY_NAME "OkumuLab"
     COMPANY_WEBSITE ""
     PRODUCT_NAME "OkumuLab 1"
-    DESCRIPTION "Labium - Prinzipal 8' flue pipe physical model"
-    VERSION 1.1.0
+    DESCRIPTION "Labium - Prinzipal 8' and Gedackt 8' flue pipe physical model"
+    VERSION 2.0.0
     PLUGIN_MANUFACTURER_CODE OkmL
     PLUGIN_CODE Lbm1
     BUNDLE_ID com.okumulab.okumulab1.labium

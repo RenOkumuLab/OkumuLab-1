@@ -4,8 +4,8 @@
  * Inside the plugin (JUCE WebView2: window.__JUCE__ exists) the screen no longer
  * runs its own engine. The C++ engine plays, and this file stands in for
  * js/audio.js with the same interface:
- *   to the plugin   parameter moves, notes and pads (as MIDI), RESET / PANIC,
- *                   MIDI learn, frame-rate reports
+ *   to the plugin   parameter moves, notes and pads (as MIDI), RESET (all or one
+ *                   parameter) / PANIC, MIDI learn, frame-rate reports
  *   from the plugin about 60 times a second: the engine telemetry in the Phase 2
  *                   message format ({t:'tel', tel, sig, caps, cpu, ...}), the
  *                   output signal (spectrogram), parameter changes made by the
@@ -237,11 +237,13 @@ window.OKL = window.OKL || {};
     clearInterval(A._retry);
     A.ctx.sampleRate = m.fs; A.os = m.os; A.maxVoices = m.maxVoices; A.hostName = m.host || 'plugin'; padCh = m.padChannel;
     A.metals = m.metals || null; A.heads = m.heads || null;          // MALLET: material tables
+    A.woods = m.woods || null;                                       // V2: the woods of a wooden pipe
     A.room = m.room || null;                                         // P5: the church the reverb is computed from
     A.presets = m.presets || []; A.program = m.program;              // P5: experiment recipes, matrix menus
     A.modSources = m.modSources || null; A.modTargets = m.modTargets || null;
     A.simd = m.simd || '';                                           // P5: SSE2 or AVX2+FMA
     if (OKL.lab) OKL.lab.onInit(A);
+    if (m.defaults) OKL.params.setDefaults(m.defaults);              // v1.1.1: the plugin's defaults (RESET buttons)
     applyParams(m.params, true);
     applyCc(m.cc);
     const v = document.querySelector('.logo-sub');
@@ -264,6 +266,7 @@ window.OKL = window.OKL || {};
       caps.push({ id: idOf(c.id), midi: c.midi, K: c.K, NX: c.NX, p: b64f32(c.p), u: b64f32(c.u), eta: b64f32(c.eta), inflow: b64f32(c.inflow),
         vm: b64f32(c.vm), T: c.T, fs: c.fs, dline: c.dline, Leff: c.Leff });
     }
+    if (m.defaults) OKL.params.setDefaults(m.defaults);              // V2: another stop, other defaults (before its values)
     applyParams(m.params, false);
     applyCc(m.cc);
     midiLog(m.midi);
@@ -279,6 +282,7 @@ window.OKL = window.OKL || {};
     if (!m || !m.t) return;
     if (m.t === 'init') onInit(m);
     else if (m.t === 'tel') { const t0 = performance.now(); onTel(m); perf.tel += performance.now() - t0; perf.telN++; }
+    else if (m.t === 'tuning') { A.tuning = m; if (OKL.tuning) OKL.tuning.onState(m); }     // v2.0: every key's tuning, the Scala files
   });
 
   /* ------------------------------------------------ frame rate (reported to the plugin, shown in the top bar) */

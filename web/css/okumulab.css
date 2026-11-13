@@ -183,12 +183,13 @@ input[type=range]::-moz-range-thumb { width: 6px; height: 14px; border: 0; backg
 /* ---------------------------------------------------------------- layout */
 #left { position: absolute; left: 12px; top: 62px; width: 316px; height: 594px; }
 #left .mfd { left: 0; width: 316px; }
-#grp-midi { top: 0; height: 204px; }
-#grp-wind { top: 207px; height: 72px; }          /* trem rate, pallet speed (Bellows became knob 5, Wind pressure) */
-#grp-voice { top: 282px; height: 116px; }
-#grp-shape { top: 401px; height: 94px; }
-#grp-atmos { top: 498px; height: 72px; }
-#left .prm { height: 22px; }
+/* (V2: rows 21 px high, so that VOICING holds the Gedackt's ears and arched cut-up as well) */
+#grp-midi { top: 0; height: 196px; }
+#grp-wind { top: 199px; height: 70px; }          /* trem rate, pallet speed (Bellows became knob 5, Wind pressure) */
+#grp-voice { top: 272px; height: 154px; }
+#grp-shape { top: 429px; height: 91px; }
+#grp-atmos { top: 523px; height: 70px; }
+#left .prm { height: 21px; }
 
 #view { left: 336px; top: 62px; width: 868px; height: 594px; overflow: hidden; background: radial-gradient(ellipse at 45% 45%, #0b1a26 0%, #050b11 75%); }
 #gl, #hud { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
@@ -212,7 +213,7 @@ input[type=range]::-moz-range-thumb { width: 6px; height: 14px; border: 0; backg
 .prms { padding: 4px 8px 0 10px; }
 .prm {
   position: relative;
-  display: grid; grid-template-columns: 92px 1fr 76px; align-items: center; gap: 8px;
+  display: grid; grid-template-columns: 92px 1fr 76px 16px; align-items: center; gap: 8px;
   height: 24px;
 }
 .prm-l { display: flex; flex-direction: column; gap: 1px; line-height: 1; overflow: hidden; }
@@ -239,6 +240,19 @@ input[type=range]::-moz-range-thumb { width: 6px; height: 14px; border: 0; backg
 .prm-v .u { font: 400 9.5px/1 var(--mono); color: var(--dim); margin-left: 3px; }
 .prm-v .sub { display: block; font: 400 9.5px/1.05 var(--mono); color: var(--fg2); margin-top: 0; }
 .prm.two .prm-v { line-height: 1; }
+/* v1.1.1: each row's RESET button, lit while the value is off its default */
+.prm-r {
+  width: 16px; height: 16px; margin-left: -3px; padding: 0; cursor: pointer;
+  display: grid; place-items: center;
+  border: 1px solid var(--line2); border-radius: 2px; background: rgba(70, 227, 255, 0.07);
+  color: var(--cyan);
+}
+.prm-r svg { width: 11px; height: 11px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.prm-r:hover { color: #eafaff; border-color: var(--cyan-2); background: rgba(70, 227, 255, 0.16); box-shadow: 0 0 6px rgba(70, 227, 255, 0.35); }
+.prm-r:active { color: var(--bg0); background: var(--cyan-2); }
+.prm.atdef .prm-r { color: var(--dim2); border-color: var(--line); background: transparent; box-shadow: none; }
+.prm.atdef .prm-r:hover { color: var(--fg2); border-color: var(--line2); }
+.prm-r:disabled { opacity: 0.35; cursor: default; }
 .prm.vis .prm-l .nm::after { content: "VISUAL"; margin-left: 4px; font: 600 7.5px/1 var(--disp); letter-spacing: 0.08em; color: var(--amber); border: 1px solid var(--amber-d); padding: 0 2px; border-radius: 2px; vertical-align: 1px; }
 .prm.hot .thumb { background: var(--amber); box-shadow: 0 0 10px var(--amber), 0 0 2px #fff; }
 .prm.hot .prm-v { color: var(--amber); }
@@ -315,7 +329,6 @@ input[type=range]::-moz-range-thumb { width: 6px; height: 14px; border: 0; backg
 .boot-box { width: 560px; text-align: center; }
 .boot-logo { font: 700 54px/1 var(--disp); letter-spacing: 0.2em; color: #eafaff; text-shadow: 0 0 24px rgba(70, 227, 255, 0.55); }
 .boot-logo span { display: inline-block; margin-left: 10px; padding: 2px 12px 4px; font-size: 40px; color: var(--bg0); background: var(--amber); border-radius: 3px; letter-spacing: 0; text-shadow: none; vertical-align: 6px; }
-.boot-sub { margin-top: 12px; font: 500 11px/1 var(--disp); letter-spacing: 0.28em; color: var(--dim); }
 .boot-list { list-style: none; margin: 28px auto 22px; padding: 12px 16px; width: 440px; text-align: left; border: 1px solid var(--line); border-radius: 4px; background: rgba(0, 0, 0, 0.3); font: 500 11.5px/1.9 var(--mono); color: var(--fg2); min-height: 120px; }
 .boot-list li span { float: right; }
 .boot-list .ok { color: var(--green); }
@@ -372,9 +385,11 @@ html.mallet #grp-lab { display: none; }
 #grp-mallet .mfd-h .tag { color: var(--amber); }
 /* parameters a struck pipe does not feel (no wind, no jet): dimmed, still adjustable */
 .prm.off { opacity: 0.3; }
+/* V2: rows of the other stop (the Prinzipal's metal, the Gedackt's wood) */
+.prm.stophid { display: none; }
 .prm.off .prm-l .nm::after { content: "NO EFFECT"; margin-left: 4px; font: 600 7px/1 var(--disp); letter-spacing: 0.08em; color: var(--dim); border: 1px solid var(--line2); padding: 0 2px; border-radius: 2px; vertical-align: 1px; }
 .prm.choice .prm-t .ticks { opacity: 0.9; }
-/* ---- P5 (plugin): experiment recipes, modulation matrix, plugin-only knobs ---- */
+/* ---- P5 (plugin): the stop menu (V2; the experiment recipes' place), modulation matrix, plugin-only knobs ---- */
 #presetSel {
   display: none; height: 30px; width: 236px; flex: none;
   background: #07121a; border: 1px solid var(--line2); border-radius: 3px;
@@ -413,7 +428,7 @@ html.plugin .plugin-only-t { display: table; }
 .mx-sel { height: 24px; background: #07121a; border: 1px solid var(--line2); border-radius: 3px; font: 500 11.5px/1 var(--disp); color: var(--fg); padding: 0 5px; }
 .mx-sel:hover, .mx-sel:focus { border-color: var(--cyan-2); outline: none; }
 .mx-amt .prms { padding: 0; }
-.mx-amt .prm { grid-template-columns: 0 1fr 84px; gap: 8px; height: 26px; }
+.mx-amt .prm { grid-template-columns: 0 1fr 84px 16px; gap: 8px; height: 26px; }
 .mx-amt .prm-l { visibility: hidden; }
 .mx-out { position: relative; height: 10px; background: #0a1820; border: 1px solid var(--line); border-radius: 2px; }
 .mx-out::before { content: ""; position: absolute; left: 50%; top: -3px; bottom: -3px; width: 1px; background: var(--dim2); }
@@ -433,6 +448,41 @@ html.plugin .plugin-only-t { display: table; }
 #grp-modx .prm { height: 24px; }
 .mx-note { margin: 10px 0 0; font: 400 11px/1.55 var(--sans); color: var(--fg2); }
 .mx-note b { color: var(--amber); font-weight: 500; }
+/* v2.0 (plugin): the tuning panel, in the matrix's place */
+#tuning { left: 336px; top: 62px; width: 868px; height: 594px; z-index: 21; background: linear-gradient(180deg, rgba(8, 17, 26, 0.985), rgba(4, 9, 15, 0.985)); }
+#tuning[hidden] { display: none; }
+#tuning .mfd-h .tag { background: var(--amber); }
+#tuning .mfd-h em { margin-left: 10px; font-style: normal; font-size: 9px; color: var(--dim); letter-spacing: 0.14em; }
+.tu-body { padding: 12px 16px 0; }
+.tu-now { font: 500 13px/1.3 var(--disp); color: var(--fg); margin-bottom: 6px; }
+#grp-tune { width: 480px; margin-bottom: 8px; }
+#grp-tune .prms { padding: 0; }
+#grp-tune .prm { height: 26px; grid-template-columns: 92px 1fr 128px 16px; }     /* (room for "Werckmeister III") */
+.tu-now b { color: var(--amber); font-weight: 600; }
+.tu-now em, .tu-v em { font-style: normal; color: var(--dim); font-size: 11px; }
+.tu-file { display: grid; grid-template-columns: 110px 1fr 64px 64px; gap: 8px; align-items: center; height: 30px; border-bottom: 1px solid #0f222b; }
+.tu-k { font: 600 9.5px/1 var(--disp); letter-spacing: 0.16em; color: var(--dim); }
+.tu-v { font: 500 11.5px/1.2 var(--sans); color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tu-v b { color: var(--cyan); font-weight: 500; }
+.tu-btn { height: 22px; cursor: pointer; border: 1px solid var(--line2); border-radius: 2px; background: rgba(70, 227, 255, 0.05);
+  font: 600 9.5px/1 var(--disp); letter-spacing: 0.16em; color: var(--fg2); }
+.tu-btn:hover:not(:disabled) { color: var(--fg); border-color: var(--cyan-2); }
+.tu-btn:disabled { opacity: 0.35; cursor: default; }
+.tu-err { margin-top: 8px; padding: 6px 9px; border-left: 2px solid #ff5a5a; background: rgba(255, 90, 90, 0.08); font: 400 11px/1.4 var(--mono); color: #ffb0b0; }
+.tu-err[hidden] { display: none; }
+.tu-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 26px; margin-top: 14px; }
+.tu-cols h5 { margin: 0 0 6px; font: 600 10.5px/1 var(--disp); letter-spacing: 0.18em; color: var(--cyan); }
+.tu-cols h5 em { margin-left: 8px; font-style: normal; font-size: 9px; color: var(--dim); letter-spacing: 0.14em; }
+.tu-tab { width: 100%; border-collapse: collapse; font: 500 11px/1 var(--mono); color: var(--fg2); }
+.tu-tab th { font: 600 8.5px/1 var(--disp); letter-spacing: 0.14em; color: var(--dim); text-align: left; padding: 0 0 5px; }
+.tu-tab td { height: 21px; border-bottom: 1px solid #0f222b; }
+.tu-tab td:nth-child(2), .tu-tab td:nth-child(3) { text-align: right; padding-right: 12px; }
+.tu-tab tr.off td { color: var(--dim2); }
+.tu-bar { position: relative; height: 6px; background: #0a1820; border-radius: 1px; }
+.tu-bar::before { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--dim2); }
+.tu-bf { position: absolute; top: 0; bottom: 0; background: var(--amber); }
+.tu-note { margin: 0 0 9px; font: 400 11px/1.55 var(--sans); color: var(--fg2); }
+.tu-note b { color: var(--amber); font-weight: 500; }
 /* the top bar has no room for the message line in the plugin (recipe menu): it is shown over the pipe view */
 html.plugin .tb-msg { display: none; }
 #viewMsg {
@@ -450,3 +500,43 @@ html.plugin #exciteSeg { flex: none; }
 #exciteSeg button { height: 30px; justify-content: center; }       /* one line, as tall as the recipe menu */
 html.plugin #presetSel { width: 214px; }
 html.plugin #midiName { max-width: 104px; }
+
+/* v2.0 (plugin): the tuning in the top bar, beside the stop: what the organ is tuned to, the way into the TUNING panel.
+   Room for it: the logo, WIND / MALLET, the stop menu, the MIDI name, the level slider and the gaps a little narrower */
+html.plugin #topbar { gap: 12px; }
+html.plugin .logo { width: 216px; flex: none; }
+html.plugin .tb-stat, html.plugin .tb-vol { padding: 0 6px; }
+html.plugin #exciteSeg button { min-width: 80px; padding: 0 9px; }
+html.plugin #presetSel { width: 168px; }
+html.plugin .tb-right { gap: 6px; }
+html.plugin #midiName { max-width: 70px; }
+html.plugin .tb-vol input { width: 54px; }
+.tune-chip { display: none; }
+html.plugin .tune-chip {
+  display: flex; align-items: center; gap: 7px; flex: none; width: 168px; height: 34px; padding: 0 8px 0 7px; cursor: pointer;
+  border: 1px solid var(--line2); border-radius: 3px; background: linear-gradient(180deg, rgba(70, 227, 255, 0.08), rgba(70, 227, 255, 0.02));
+  color: var(--fg); text-align: left;
+}
+.tune-chip:hover { border-color: var(--cyan-2); background: rgba(70, 227, 255, 0.12); }
+.tc-ico { width: 18px; height: 18px; flex: none; color: var(--cyan); filter: drop-shadow(0 0 4px rgba(70, 227, 255, 0.45)); }
+.tc-t { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
+.tc-r { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; }
+.tc-k { font: 600 8.5px/1 var(--disp); letter-spacing: 0.22em; color: var(--cyan); }
+.tc-a { font: 500 9.5px/1 var(--mono); color: var(--fg2); white-space: nowrap; }
+.tc-v { font: 600 12px/1 var(--disp); letter-spacing: 0.03em; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* tuned away from equal temperament at 440 Hz: amber, as the lit buttons and the modulated knobs */
+.tune-chip.live { border-color: var(--amber-d); background: linear-gradient(180deg, rgba(255, 181, 71, 0.14), rgba(255, 181, 71, 0.04)); box-shadow: 0 0 10px rgba(255, 181, 71, 0.22); }
+.tune-chip.live .tc-ico, .tune-chip.live .tc-k { color: var(--amber); filter: drop-shadow(0 0 4px rgba(255, 181, 71, 0.5)); }
+.tune-chip.live .tc-v, .tune-chip.live .tc-a { color: #ffe2b0; }
+/* the panel open */
+.tune-chip.on { border-color: var(--cyan-2); background: var(--cyan-2); box-shadow: none; }
+.tune-chip.on .tc-ico, .tune-chip.on .tc-k, .tune-chip.on .tc-v, .tune-chip.on .tc-a { color: var(--bg0); filter: none; }
+/* a .scl or .kbm dragged over the screen */
+#dropHint { position: absolute; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; pointer-events: none;
+  background: rgba(3, 8, 13, 0.72); }
+#dropHint[hidden] { display: none; }
+.dh-box { display: flex; flex-direction: column; align-items: center; gap: 10px; padding: 34px 64px;
+  border: 2px dashed var(--amber); border-radius: 8px; background: rgba(255, 181, 71, 0.06); box-shadow: 0 0 40px rgba(255, 181, 71, 0.18); }
+.dh-box svg { width: 54px; height: 54px; color: var(--amber); filter: drop-shadow(0 0 8px rgba(255, 181, 71, 0.6)); }
+.dh-box b { font: 700 22px/1 var(--disp); letter-spacing: 0.3em; color: var(--amber); }
+.dh-box span { font: 500 12px/1 var(--disp); letter-spacing: 0.08em; color: var(--fg2); }

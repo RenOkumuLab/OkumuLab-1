@@ -30,6 +30,18 @@ public:
     void mouseUp (const juce::MouseEvent& e) override { if (! e.mods.isPopupMenu()) juce::Slider::mouseUp (e); }
 };
 
+/* v1.1.1: a knob's RESET button (a circular arrow), lit while the knob is off its default */
+class KnobResetButton : public juce::Button
+{
+public:
+    KnobResetButton() : juce::Button ("RESET") {}
+    void setLit (bool on) { if (on != lit) { lit = on; repaint(); } }
+    void paintButton (juce::Graphics&, bool over, bool down) override;
+
+private:
+    bool lit = false;
+};
+
 class OklKnob : public juce::Component, private juce::Slider::Listener
 {
 public:
@@ -52,10 +64,13 @@ private:
     const int idx;
     const bool big;
     KnobSlider slider;
+    KnobResetButton resetBtn;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> attach;
     juce::String ccText;
     float lastValue = 0, hot = 0;
     bool dragging = false;
+    double defShown = 0;               // V2: the default it shows (the stop's)
+    void setDefault (double def);
 };
 
 class NativeEditor : public juce::AudioProcessorEditor, private juce::Timer
@@ -90,6 +105,8 @@ private:
     std::vector<std::unique_ptr<OklKnob>> knobs;
     juce::TextButton resetButton { "RESET" }, panicButton { "PANIC" };
     juce::ComboBox padChannel;
+    // V2: the stop (the host's programs: selecting one sets the stop as built)
+    juce::ComboBox stopBox;
     // MALLET: the excitation switch; the LAB panel becomes the MALLET panel
     juce::ComboBox excite;
     std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> exciteAttach;

@@ -1058,9 +1058,92 @@ function OKL_ENGINE_FACTORY() {
     }
   }
 
+  /* ------------------------------------------- v2.0: Gedackt 8' ---- */
+  /* the plugin's designGedackt (src/dsp/LabiumCore.cpp), for the drawing: Dickson's Stopped Diapason, C 82.5 x 101.6 mm
+     inside, the equal-area diameter halving every 19.7 HT (LabiumCore.h kGedackt*), the mouth the inside width, cut-up
+     5 HT above the norm cut-up (Janke) times the user's voicing per key range, Fletcher & Rossing's mouth correction (no
+     ears as built), a quarter-wave body */
+  const GED_W_C = 0.0825, GED_D_C = 0.1016, GED_HALVING = 19.7, GED_CUT_HT = 5.0;
+  const GED_DEQ_C = 2 * Math.sqrt(GED_W_C * GED_D_C / Math.PI);
+  const GED_SCALE_HT = 16 * Math.log2(GED_DEQ_C / 0.1555), GED_MOUTH = GED_W_C / (Math.PI * GED_DEQ_C);
+  // the block and the turned foot, toe to mouth, per inside width (LabiumCore.h kGedacktFootPerWidth: the BDO's wooden pipe)
+  const GED_FOOT_PER_W = 80 / 47;
+  const GED_FLUE_47 = 1.0e-3, GED_FLUE_EXP = 0.309;
+  // the user's voicing of the cut-up, key by key from g (MIDI 55) (LabiumCore.cpp gedacktCutVoicing)
+  const GED_CUT_VOICING = [
+    1.468, 1.467, 1.466, 1.465, 1.464, 1.464, 1.463, 1.463, 1.463, 1.457, 1.457, 1.457,
+    1.607, 1.605, 1.604, 1.603, 1.600, 1.597, 1.595, 1.592, 1.589, 1.587, 1.583, 1.580,
+    1.605, 1.603, 1.597, 1.592, 1.588, 1.583, 1.578, 1.571, 1.563, 1.557, 1.549, 1.540, 1.532,
+    1.456, 1.450, 1.442, 1.428, 1.410];
+  function gedacktCutVoicing(midi) {
+    if (midi <= 54) return 1.00;
+    return GED_CUT_VOICING[Math.min(midi, 96) - 55];
+  }
+  function mouthCorrection(fr, d, mw, cut, ears) {
+    let M = fr ? 2.3 * (0.25 * d * d) / Math.sqrt(mw * cut) : 0.3 * d * d / cut;
+    // the neck through the front board (LabiumCore.cpp: t S / S_m, t = Mallet.cpp woodWallThickness = w x 10.5 / 61.8)
+    if (fr) M += mw * (10.5 / 61.8) * (0.25 * Math.PI * d * d) / (mw * cut);
+    if (ears > 0) {
+      const S = 0.25 * Math.PI * d * d, Sm = mw * cut, am = Math.sqrt(Sm / Math.PI);
+      M += ears * (S / Sm) * (0.8216 - 0.6133) * am * cut / (mw + cut);
+    }
+    return M;
+  }
+  function designGedackt(midi) {
+    const g = gasProps(0, 20);
+    const f0 = midiToHz(midi), k = midi - 36;
+    const d = 0.1555 * Math.pow(2, GED_SCALE_HT / 16) * Math.pow(2, -k / GED_HALVING);
+    const H = GED_MOUTH * Math.PI * d, depth = 0.25 * Math.PI * d * d / H;
+    // the flue of real wooden pipes (LabiumCore.h kGedacktFlue*: 1 mm at the BDO's 47 mm, 0.6 mm at Schuke's 9 mm)
+    const flue = GED_FLUE_47 * Math.pow(H / 0.047, GED_FLUE_EXP);
+    const Sflue = flue * H, Stoe = Sflue / Math.sqrt(1 / 0.7 - 1), toe = Math.sqrt(4 * Stoe / Math.PI);
+    const pw = 75 * MMWS, pf = pw / (1 + Math.pow(Sflue / Stoe, 2));
+    const dN = 0.1555 * Math.pow(2, -k / 16);
+    const W = Math.pow(2, GED_CUT_HT / 16) * Math.PI * dN / 16 * gedacktCutVoicing(midi);   // (the user's voicing)
+    const M = mouthCorrection(true, d, H, W, 0);         // without ears (the Ears knob starts at 0)
+    const Leff = g.c / (4 * f0);
+    return {
+      midi, name: organName(midi), f0, d, mouth_w: H, depth, cutup: W, flue, toe, foot_len: GED_FOOT_PER_W * H, l_phys: Leff - M, L_eff: Leff, M,
+      p_chest: pw, p_foot: pf, ising: Math.sqrt(2 * pf * flue / (g.rho * W * W * W)) / f0, c: g.c, rho: g.rho,
+    };
+  }
+  function displayGeometryGedackt(midi, G) {
+    const pd = designGedackt(midi);
+    const k = midi - 36;
+    const d = 0.1555 * Math.pow(2, G.scaleHT / 16) * Math.pow(2, -k / GED_HALVING);
+    const H = G.mouthFrac * Math.PI * d, depth = 0.25 * Math.PI * d * d / H;
+    const morph = Math.min(1, Math.max(0, G.morph)), ears = Math.min(1, Math.max(0, G.ears || 0)), arch = Math.min(1, Math.max(0, G.arch || 0));
+    const gp = gasProps(gasMix(G.gas), G.tempC), c = gp.c * (G.cMult || 1);
+    const ftarget = pd.f0 * Math.pow(2, (G.glide || 0) / 12);
+    const lPhys = pd.L_eff * Math.pow(2, -(G.glide || 0) / 12) - pd.M;          // the body as built (glide: the key moved)
+    // the cut-up as the voice uses it: x the knob, and the voicing follow when the stopper is drawn (resonance up)
+    let W = pd.cutup * G.cutup, M = 0, Leff = 0, fres = 0;
+    for (let pass = 0; pass < 2; pass++) {
+      M = mouthCorrection(true, d, H, W, ears);
+      Leff = lPhys + M + 0.3 * d * (1 - morph);
+      fres = c / (2 * Leff) * (1 - 0.5 * morph);
+      if (pass === 0 && G.vFollow > 0) W = W * Math.pow(fres / pd.f0, -2 / 3 * G.vFollow); else break;
+    }
+    const h = pd.flue, bE = 0.4 * h, xs = 3 * h + 7.67 * bE;
+    let bW = bE, growth = 0.16 * W / bE;
+    if (W > xs) { bW = (W - 3 * h) / 7.67; growth = 0.16 * (xs / bE + 7.67 * Math.log(bW / bE)); }
+    const nk = 1 + 0.75 * Math.min(1, Math.max(0, G.nicking || 0));
+    const archRise = arch > 0 && W > xs ? arch * Math.min(0.5 * H, (W - xs) / (0.25 * Math.PI)) : 0;
+    return {
+      midi, name: organName(midi), f0: pd.f0, ftarget, stop: 1,
+      d, H, depth, W, h, toe: pd.toe * G.toe, footLen: pd.foot_len,
+      L: Math.max(0.004, lPhys), Lphys: lPhys, Leff, M, fres, morph, y0: G.y0b * 0.4 * h * bW / bE, y0b1: bW,
+      c, rho: gp.rho * (G.rhoMult || 1), pchest: (G.wind || 0) * (G.bellows || 0) * MMWS, kappa: G.kappa, ampcap: growth, bjet: nk * bW,
+      Wdesign: pd.cutup, ising: pd.ising, pfDesign: pd.p_foot, lDesign: pd.l_phys, dDesign: pd.d,
+      ears, arch, archRise, dMears: mouthCorrection(true, d, H, W, ears) - mouthCorrection(true, d, H, W, 0),
+      wall: H * 10.5 / 61.8 * (G.wallMult || 1), woodIdx: Math.round(G.wood || 0),
+    };
+  }
+
   /* --------------------------------------------- display geometry ---- */
   /* the pipe as the screen should draw it for (midi, G): derived lengths included */
   function displayGeometry(midi, G, fs) {
+    if (G && Math.round(G.stop || 0) === 1) return displayGeometryGedackt(midi, G);     // v2.0
     const p = voiceParams(midi, G);
     const dv = derive(p, fs || 96000, newDerived());
     const pd = designPrinzipal(midi);
@@ -1091,7 +1174,7 @@ function OKL_ENGINE_FACTORY() {
   return {
     PNAMES, NPAR, PI, MMWS, CTRL, K_SNAP, NX_SNAP, GASES, DEFAULT_G,
     gasProps, gasMix, midiToHz, organName, designPrinzipal, setKcal, kcalFor, baseParams, voiceParams,
-    derive, newDerived, Voice, Engine, Host, Decimator, displayGeometry,
+    derive, newDerived, Voice, Engine, Host, Decimator, displayGeometry, designGedackt,
   };
 }
 

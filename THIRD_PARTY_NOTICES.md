@@ -19,6 +19,11 @@ OkumuLab 1 uses the following software and fonts. The full license texts are in 
 | Microsoft WebView2 SDK 1.0.3485.44 | 画面（Windows のみ。ローダーを静的リンク） | BSD 形式（Microsoft） | [WebView2-LICENSE.txt](licenses/WebView2-LICENSE.txt)、[WebView2-NOTICE.txt](licenses/WebView2-NOTICE.txt) |
 | three.js r160 | 画面の 3D 表示 | MIT | [three.js-LICENSE.txt](licenses/three.js-LICENSE.txt) |
 | Chakra Petch、JetBrains Mono | 画面のフォント | SIL Open Font License 1.1 | [OFL-fonts.txt](licenses/OFL-fonts.txt) |
+| tuning-library（Surge Synth Team、コミット d6fcc08） | Scala の .scl / .kbm の読み込み（v2.0） | MIT（Copyright 2019-2020, Paul Walker） | [tuning-library-LICENSE.md](licenses/tuning-library-LICENSE.md) |
+
+内蔵の音律（ピタゴラス、1/4 コンマ・ミーントーン、ヴェルクマイスター III、キルンベルガー III、ヴァロッティ、ヤング）は、文献にある五度の調律のしかた（純正な五度を、ピタゴラス・コンマまたはシントニック・コンマの何分の一狭めるか）から、このプラグインの中で計算しています。ほかの音律ファイルは同梱していません。
+
+The built-in temperaments (Pythagorean, 1/4-comma meantone, Werckmeister III, Kirnberger III, Vallotti, Young) are computed inside the plugin from their published circles of fifths (each fifth pure or narrowed by a fraction of the Pythagorean or syntonic comma). No third-party tuning files are included.
 
 macOS 版と Linux 版は、OS に入っているライブラリを使い、配布物には含めていません。macOS では Apple のフレームワーク（画面は WKWebView）、Linux では ALSA、X11、FreeType、fontconfig と、ある場合は JACK と WebKitGTK（画面）を、実行するときに OS から読み込みます。
 

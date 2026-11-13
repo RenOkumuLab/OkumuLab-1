@@ -4,7 +4,8 @@
  * Everything is in metres, in pipe-local coordinates: y up, y = 0 at the
  * languid (bottom of the mouth), the mouth faces +z. The body is rebuilt on
  * the CPU whenever its dimensions change (fixed topology, so only positions
- * and normals are rewritten).
+ * and normals are rewritten). v2.0: the Gedackt is drawn as its wooden box
+ * instead (buildWood), its stopper drawn out of the top as Open/Stopped opens it.
  */
 window.OKL = window.OKL || {};
 
@@ -39,6 +40,8 @@ OKL.pipe3d = (function () {
   let haze, hazeMat, mouthFrame, topRing;      // parameter effects: atmosphere haze, highlight outlines
   let ghostG, ghostGeoBody, ghostGeoFoot, ghostMat;
   let malletG, malletHead, malletHeadMat, malletStick, hitRing, MDIR, MUP;     // MALLET (plugin)
+  let woodG, stopperG, woodMat, endMat, leatherMat, lipMat, ghostGeoBox;        // v2.0: the wooden Gedackt
+  let wKey = '';
   /* the pipe leans (pivoting on its toe, which stays on the floor) and spins slowly about its own axis */
   let tiltG;
   const TILT_Z = -0.31, TILT_X = 0.08;        // ~18 deg to the right, top slightly toward the viewer
@@ -199,6 +202,98 @@ OKL.pipe3d = (function () {
     irisGeo.computeVertexNormals();
     irisGeo.computeBoundingSphere();
     iris.visible = m > 0.004;
+  }
+
+  /* ---------------------------------------------------------------- v2.0: the wooden Gedackt */
+  /* a box of four boards (inside W x D: the mouth spans the width, facing +z), the block and its cap below the mouth, the
+     upper lip cut in a semicircle (the cut-up its mean height), side ears, a turned foot, and the leather-sealed stopper
+     with its handle, which Open/Stopped draws out of the top.
+     Proportions (v2.0) of the Bund Deutscher Orgelbaumeister's stopped wooden pipe (Bauanleitung Holzpfeife, J. Hess 2018:
+     inside 47 x 60 mm, boards 9 mm; the block 50 mm high with the side and back boards flush with its bottom; a round foot
+     of 18 mm, 30 mm below the block; the stopper 50 mm high; a round handle of 14 mm standing 70 mm out of it), in units of
+     the inside width at every key: the foot and block from toe to mouth are the design's footLen (LabiumCore.h) */
+  const WOOD_COL = [0xa9824f, 0xd2ae73, 0xe3cf9c, 0xa8603f];     // white oak, red pine, Sitka spruce, western red cedar
+  const BDO = { block: 50 / 47, foot: 18 / 47, stopper: 50 / 47, handle: 14 / 47, handleOut: 70 / 47 };
+  function woodInfo(gg) {
+    const W = gg.H, D = gg.depth, t = Math.max(gg.wall || W * 0.17, 0.0006);
+    const Wo = W + 2 * t, Do = D + 2 * t;
+    const blockLen = Math.max(0.001, Math.min(BDO.block * W, gg.footLen - 0.0005));
+    const stH = BDO.stopper * W;
+    const rise = gg.archRise || 0, side = gg.W - Math.PI / 4 * rise;
+    const r = 0.5 * Math.max(Wo, Do);
+    return {
+      wood: true, W, D, t, Wo, Do, blockLen, stH, topExt: stH, rise, side, apex: side + rise,
+      r, half: W / 2, zc: D / 2, A: rise, Al: 0, lipZone: 0, hv: Math.max(gg.h, 0.006 * W),
+      rt: Math.min(0.8 * 0.5 * BDO.foot * W, Math.max(gg.toe / 2, 0.05 * r)),
+      ax: 0.86 * W / 2, az: 0.86 * D / 2, zOut: D / 2 + t, xOut: W / 2 + t, rFoot: 0.5 * BDO.foot * W,
+    };
+  }
+  const lipY = (I, x) => I.side + I.rise * Math.sqrt(Math.max(0, 1 - (2 * x / I.W) * (2 * x / I.W)));
+
+  function woodMesh(geo, mat, x, y, z) {
+    const m = new T.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.renderOrder = 10;
+    return m;
+  }
+  function buildWood(gg, I) {
+    for (const ch of woodG.children.slice()) {
+      if (ch === stopperG) continue;
+      woodG.remove(ch);
+      if (ch.geometry) ch.geometry.dispose();
+    }
+    for (const ch of stopperG.children.slice()) { stopperG.remove(ch); if (ch.geometry) ch.geometry.dispose(); }
+    woodMat.color.setHex(WOOD_COL[gg.woodIdx || 0] || WOOD_COL[0]);
+    endMat.color.setHex(WOOD_COL[gg.woodIdx || 0] || WOOD_COL[0]).multiplyScalar(0.78);
+    const L = gg.L, top = L + I.topExt, bot = -I.blockLen, hB = top - bot, yB = 0.5 * (top + bot);
+    // back and side boards
+    woodG.add(woodMesh(new T.BoxGeometry(I.Wo, hB, I.t), woodMat, 0, yB, -I.D / 2 - I.t / 2));
+    for (const sx of [-1, 1]) woodG.add(woodMesh(new T.BoxGeometry(I.t, hB, I.D), woodMat, sx * (I.W / 2 + I.t / 2), yB, 0));
+    // the front board: from the upper lip (a semicircle over the inside width) to the top; its jambs over the side boards
+    // run down to the cap
+    const sh = new T.Shape();
+    sh.moveTo(-I.Wo / 2, 0); sh.lineTo(-I.Wo / 2, top); sh.lineTo(I.Wo / 2, top); sh.lineTo(I.Wo / 2, 0);
+    sh.lineTo(I.W / 2, 0); sh.lineTo(I.W / 2, I.side);
+    const N = 28;
+    for (let k = 1; k < N; k++) { const x = I.W / 2 - I.W * k / N; sh.lineTo(x, lipY(I, x)); }
+    sh.lineTo(-I.W / 2, I.side); sh.lineTo(-I.W / 2, 0); sh.closePath();
+    const fg = new T.ExtrudeGeometry(sh, { depth: I.t, bevelEnabled: false, curveSegments: 4 });
+    woodG.add(woodMesh(fg, woodMat, 0, 0, I.D / 2));
+    // cap (Vorschlag) over the block's front, the windway between them; the block; the bottom board
+    woodG.add(woodMesh(new T.BoxGeometry(I.Wo, I.blockLen, I.t), woodMat, 0, -I.blockLen / 2, I.D / 2 + I.t / 2));
+    woodG.add(woodMesh(new T.BoxGeometry(I.W, I.blockLen, Math.max(1e-5, I.D - I.hv)), endMat, 0, -I.blockLen / 2, -I.hv / 2));
+    // the turned foot under the block, down to the toe hole (a round rod, bored: no taper)
+    const fLen = Math.max(0.0005, gg.footLen - I.blockLen);
+    const foot = new T.CylinderGeometry(I.rFoot, I.rFoot, fLen, 32, 1, false);
+    woodG.add(woodMesh(foot, endMat, 0, bot - fLen / 2, 0));
+    // side ears: as long as the mouth is high, standing off the front by half of that
+    if ((gg.ears || 0) > 0.01) {
+      const eH = I.apex * 1.08, eD = 0.5 * I.apex * gg.ears, eT = Math.max(0.0004, 0.5 * I.t);
+      for (const sx of [-1, 1])
+        woodG.add(woodMesh(new T.BoxGeometry(eT, eH, eD), woodMat, sx * (I.W / 2 + I.t / 2), 0.5 * eH - 0.04 * I.apex, I.zOut + eD / 2));
+    }
+    // the upper lip's edge (cyan, as the metal labium's)
+    const lp = [];
+    for (let k = 0; k <= N; k++) { const x = -I.W / 2 + I.W * k / N; lp.push(x, lipY(I, x), I.D / 2 + 0.0002); }
+    const lg = new T.BufferGeometry(); lg.setAttribute('position', new T.Float32BufferAttribute(lp, 3));
+    const lipLine = new T.Line(lg, lipMat); lipLine.renderOrder = 11;
+    woodG.add(lipLine);
+    // the stopper: a wooden plug, leather round its lower part, a handle on top
+    const sw = I.W * 0.992, sd = I.D * 0.992;
+    stopperG.add(woodMesh(new T.BoxGeometry(sw, I.stH, sd), endMat, 0, I.stH / 2, 0));
+    stopperG.add(woodMesh(new T.BoxGeometry(I.W * 0.999, 0.55 * I.stH, I.D * 0.999), leatherMat, 0, 0.275 * I.stH, 0));
+    const hr = 0.5 * BDO.handle * I.W, hh = BDO.handleOut * I.W;          // the handle: a round rod
+    stopperG.add(woodMesh(new T.CylinderGeometry(hr, hr, hh, 20), woodMat, 0, I.stH + hh / 2, 0));
+    // the mouth's outline for the highlight (cut-up moving)
+    const mo = [-I.W / 2, 0, I.zOut + 0.0003, I.W / 2, 0, I.zOut + 0.0003];
+    for (let k = 0; k <= N; k++) { const x = I.W / 2 - I.W * k / N; mo.push(x, lipY(I, x), I.zOut + 0.0003); }
+    mouthFrame.geometry.setAttribute('position', new T.Float32BufferAttribute(mo, 3));
+    mouthFrame.geometry.computeBoundingSphere();
+  }
+  /* the stopper: in (Stopped 100 %) its face is the top of the air column; drawn out with Open, clear of the boards at 0 % */
+  function placeStopper(gg, I) {
+    const m = Math.min(1, Math.max(0, gg.morph));
+    stopperG.position.set(0, gg.L + (1 - m) * (I.topExt + 0.45 * I.stH), 0);
   }
 
   /* ---------------------------------------------------------------- shaders */
@@ -421,6 +516,30 @@ OKL.pipe3d = (function () {
     const ringGeo = new T.BufferGeometry(); ringGeo.setAttribute('position', new T.Float32BufferAttribute(ring, 3));
     topRing = new T.LineLoop(ringGeo, hlMat()); topRing.renderOrder = 4; pipeG.add(topRing);
 
+    // ---- v2.0: the wooden Gedackt (its boards x-rayed like the metal body), its stopper
+    const xrayed = (mat) => {
+      mat.userData.uXray = bodyMat.userData.uXray;
+      mat.onBeforeCompile = (sh) => {
+        sh.uniforms.uXray = mat.userData.uXray;
+        sh.fragmentShader = 'uniform float uXray;\n' + sh.fragmentShader.replace(
+          '#include <normal_fragment_maps>',
+          `#include <normal_fragment_maps>
+           float okF = pow(1.0 - abs(dot(normalize(normal), normalize(vViewPosition))), 1.6);
+           diffuseColor.a *= mix(1.0, mix(0.10, 0.95, okF), uXray);`);
+      };
+      return mat;
+    };
+    woodMat = xrayed(new T.MeshPhysicalMaterial({ color: WOOD_COL[0], metalness: 0, roughness: 0.62, clearcoat: 0.25, clearcoatRoughness: 0.6,
+      envMapIntensity: 0.55, transparent: true, side: T.DoubleSide, depthWrite: false }));
+    endMat = xrayed(new T.MeshPhysicalMaterial({ color: WOOD_COL[0], metalness: 0, roughness: 0.7, envMapIntensity: 0.45,
+      transparent: true, side: T.DoubleSide, depthWrite: false }));
+    leatherMat = new T.MeshPhysicalMaterial({ color: 0x4a2c1c, metalness: 0, roughness: 0.85, envMapIntensity: 0.3 });
+    lipMat = new T.LineBasicMaterial({ color: new T.Color(0.6, 2.6, 3.4) });
+    woodG = new T.Group(); woodG.visible = false;
+    stopperG = new T.Group();
+    woodG.add(stopperG);
+    pipeG.add(woodG);
+
     // ---- iris (open <-> stopped)
     irisGeo = new T.BufferGeometry();
     irisMat = new T.MeshPhysicalMaterial({ color: TIN, metalness: 1, roughness: 0.32, side: T.DoubleSide, envMapIntensity: 1.0, polygonOffset: true, polygonOffsetFactor: -1 });
@@ -497,6 +616,7 @@ OKL.pipe3d = (function () {
     ghostG = new T.Group(); scene.add(ghostG);
     ghostGeoBody = new T.CylinderGeometry(1, 1, 1, 40, 1, true); ghostGeoBody.translate(0, 0.5, 0);
     ghostGeoFoot = new T.CylinderGeometry(1, 0.14, 1, 40, 1, true); ghostGeoFoot.translate(0, -0.5, 0);
+    ghostGeoBox = new T.BoxGeometry(1, 1, 1); ghostGeoBox.translate(0, 0.5, 0);           // v2.0: wooden pipes
 
     // ---- post
     const rt = new T.WebGLRenderTarget(cw, ch, { type: T.HalfFloatType, samples: 4 });
@@ -551,6 +671,8 @@ OKL.pipe3d = (function () {
 
   /* ---------------------------------------------------------------- geometry */
   function setGeometry(gg) {
+    if (gg.stop === 1) return setWoodGeometry(gg);           // v2.0: the wooden Gedackt
+    if (woodG.visible) { woodG.visible = false; body.visible = languid.visible = rim.visible = labEdge.visible = topRing.visible = true; wKey = ''; gKey = ''; }
     const key = [gg.d, gg.L, gg.W, gg.H, gg.footLen, gg.toe, gg.morph, gg.h].map((v) => v.toPrecision(5)).join(',');
     g = gg;
     if (key === gKey) return;
@@ -572,6 +694,30 @@ OKL.pipe3d = (function () {
     glow.scale.set(0.86 * I.r, gg.L, 0.86 * I.r);
   }
 
+  /* v2.0: the wooden Gedackt in place of the metal body (rebuilt when its dimensions change; the stopper moves every frame) */
+  function setWoodGeometry(gg) {
+    g = gg;
+    const key = [gg.H, gg.depth, gg.L, gg.W, gg.archRise || 0, gg.footLen, gg.toe, gg.h, gg.wall || 0, gg.ears || 0, gg.woodIdx || 0]
+      .map((v) => (+v).toPrecision(5)).join(',');
+    if (!woodG.visible) {
+      woodG.visible = true;
+      body.visible = languid.visible = rim.visible = labEdge.visible = iris.visible = topRing.visible = false;
+      gKey = '';
+    }
+    if (key !== wKey) {
+      wKey = key;
+      geoInfo = woodInfo(gg);
+      buildWood(gg, geoInfo);
+      const I = geoInfo;
+      toeRim.position.set(0, -gg.footLen, 0); toeRim.scale.setScalar(I.rt);
+      haze.scale.set(0.93 * I.W / 2, gg.L, 0.93 * I.D / 2);
+      glow.scale.set(I.ax, gg.L, I.az);
+      const e = Math.max(0.01 * I.r, 0.00025);
+      flueGlow.position.set(0, 0.0004 * I.r, I.zc - I.hv / 2); flueGlow.scale.set(I.W * 0.98, e * 0.6, I.hv);
+    }
+    placeStopper(gg, geoInfo);
+  }
+
   /* ---------------------------------------------------------------- ghosts */
   function setGhosts(list) {
     while (ghosts.length < list.length) {
@@ -591,15 +737,19 @@ OKL.pipe3d = (function () {
       const it = list[i];
       gr.visible = !!it;
       if (!it) continue;
-      const r = it.geom.d / 2;
+      const boxed = it.geom.stop === 1;                 // v2.0: a wooden Gedackt's box
+      const wd = boxed ? it.geom.H + 2 * (it.geom.wall || 0) : 0, dd = boxed ? it.geom.depth + 2 * (it.geom.wall || 0) : 0;
+      const r = boxed ? 0.5 * Math.max(wd, dd) : it.geom.d / 2;
       x += r;
       // toe on the floor (all feet stand on the same chest), leaning like the main pipe
       gr.position.set(x, -g.footLen, -0.2 * hMain - 0.05);
       gr.rotation.set(TILT_X, 0, TILT_Z);
       x += r + Math.max(0.6 * it.geom.d, 0.03 * hMain);
-      gr.children[0].scale.set(r, it.geom.L, r);
+      gr.children[0].geometry = boxed ? ghostGeoBox : ghostGeoBody;
+      if (boxed) gr.children[0].scale.set(wd, it.geom.L, dd);
+      else gr.children[0].scale.set(r, it.geom.L, r);
       gr.children[0].position.y = it.geom.footLen;
-      gr.children[1].scale.set(r, it.geom.footLen, r);
+      gr.children[1].scale.set(boxed ? 0.64 * r : r, it.geom.footLen, boxed ? 0.64 * r : r);
       gr.children[1].position.y = it.geom.footLen;
       gr.userData.mat.uniforms.uA.value = 0.18 + 0.55 * Math.min(1, it.level);
       gr.updateMatrixWorld(true);
@@ -668,6 +818,7 @@ OKL.pipe3d = (function () {
     // open <-> stopped: the top rim and the iris light up while it closes or opens
     topRing.material.opacity = Math.min(1, 1.2 * st.pulse.top);
     irisMat.emissive.setRGB(0.9, 0.5, 0.12).multiplyScalar(0.5 * st.pulse.top);
+    leatherMat.emissive.setRGB(0.9, 0.5, 0.12).multiplyScalar(0.6 * st.pulse.top);      // v2.0: the Gedackt's stopper
     // gas / temperature: tinted haze in the bore, warm or cold tint on the metal
     const gasAmt = Math.min(1, Math.abs(G.gas));
     const heat = Math.min(1, Math.max(0, (G.tempC - 20) / 60)), cold = Math.min(1, Math.max(0, (20 - G.tempC) / 50));
@@ -676,6 +827,7 @@ OKL.pipe3d = (function () {
     hazeMat.uniforms.uT.value = st.time;
     haze.visible = hazeMat.uniforms.uA.value > 0.003;
     bodyMat.emissive.setRGB(0.07 * heat + 0.008 * cold, 0.024 * heat + 0.022 * cold, 0.005 * heat + 0.055 * cold);
+    woodMat.emissive.copy(bodyMat.emissive);
 
     // ---- side hole
     const sh = G.sideHole;
@@ -684,8 +836,8 @@ OKL.pipe3d = (function () {
     if (holeG.visible) {
       const y0 = g.W + I.A * 1.2, y1 = g.L - 1.2 * I.r;
       yHole = y0 + (Math.max(y0, y1) - y0) * sh;
-      rHole = 0.24 * I.r;
-      holeG.position.set(I.r * 1.002, yHole, 0);
+      rHole = 0.24 * (I.wood ? 0.5 * Math.min(I.W, I.D) : I.r);
+      holeG.position.set((I.wood ? I.xOut : I.r) * 1.002, yHole, 0);       // (v2.0: a wooden pipe's side board)
       holeG.scale.setScalar(rHole);
     }
 
@@ -698,9 +850,10 @@ OKL.pipe3d = (function () {
       if (M.strikes !== M.seen) { M.seen = M.strikes; M.hitT = 0; }
       M.hitT += dt;
       const r = I.r, hr = M.headR, yS = Math.min(g.L, Math.max(0, M.y));
+      const face = I.wood ? I.zOut : r;                // (v2.0: a wooden pipe is struck on its front board)
       const rest = Math.max(4 * hr, 2.5 * r);
       const gap = M.hitT < 0.05 ? 0 : rest * (1 - Math.exp(-(M.hitT - 0.05) / 0.12));
-      const z = r + hr + gap;
+      const z = face + hr + gap;
       malletHead.position.set(0, yS, z); malletHead.scale.setScalar(hr);
       malletHeadMat.color.setHex(M.color);
       malletHeadMat.metalness = M.metal;
@@ -710,7 +863,7 @@ OKL.pipe3d = (function () {
       malletStick.quaternion.setFromUnitVectors(MUP, MDIR);
       const fl = Math.max(0, 1 - M.hitT / 0.5);
       hitRing.material.opacity = 0.9 * fl;
-      hitRing.position.set(0, yS, r * 1.003);
+      hitRing.position.set(0, yS, face * 1.003);
       hitRing.scale.setScalar(r * (0.15 + 1.6 * (1 - fl)));
     }
 
@@ -793,7 +946,8 @@ OKL.pipe3d = (function () {
       if (P.u[i] >= 1) { P.u[i] -= 1; P.seed[i] = rnd(); P.rx[i] = (rnd() * 2 - 1); P.rz[i] = rnd() * 2 - 1; }
       const u = P.u[i];
       const y = -g.footLen * (1 - u);
-      const rr = r + (I.rt - r) * (1 - u);
+      const r0 = I.wood ? I.rFoot : r;                    // (v2.0: the turned foot of a wooden pipe)
+      const rr = r0 + (I.rt - r0) * (1 - u);
       const conv = Math.pow(u, 3);
       const x0 = P.rx[i] * rr * 0.7, z0 = P.rz[i] * rr * 0.7;
       const x1 = P.rx[i] * half * 0.9, z1 = zc - I.hv * 0.5;
@@ -816,7 +970,7 @@ OKL.pipe3d = (function () {
         p = (vm.pInst[i0] * (1 - f) + vm.pInst[i1] * f) / pm;
         if (vm.xi) xi = vm.xi[i0] * (1 - f) + vm.xi[i1] * f;
       }
-      pos[k] = P.rx[i] * r; pos[k + 1] = yr * g.L + xi * amp * vm.on; pos[k + 2] = P.rz[i] * r;
+      pos[k] = P.rx[i] * (I.wood ? I.W / 2 : r); pos[k + 1] = yr * g.L + xi * amp * vm.on; pos[k + 2] = P.rz[i] * (I.wood ? I.D / 2 : r);
       const ap = Math.abs(p) * vm.on;
       if (p >= 0) { col[k] = 1.0; col[k + 1] = 0.62; col[k + 2] = 0.18; } else { col[k] = 0.25; col[k + 1] = 0.55; col[k + 2] = 1.0; }
       col[k] = col[k] * ap + c[0] * 0.35 * (1 - ap);
@@ -834,7 +988,7 @@ OKL.pipe3d = (function () {
       if (P.age[i] >= 1) { P.age[i] = 0; P.seed[i] = rnd(); P.vx[i] = (rnd() - 0.5) * 2; P.vz[i] = (rnd() - 0.5) * 2; }
       const a = P.age[i];
       const reach = r * (0.3 + 2.2 * vm.on);
-      pos[k] = r + a * reach;
+      pos[k] = (I.wood ? I.xOut : r) + a * reach;
       pos[k + 1] = yHole + P.vx[i] * rHole * (0.6 + a * 2);
       pos[k + 2] = P.vz[i] * rHole * (0.6 + a * 2);
       col[k] = 1.0; col[k + 1] = 0.72; col[k + 2] = 0.3;
@@ -852,9 +1006,12 @@ OKL.pipe3d = (function () {
   const vTmp = { a: null, b: null, c: null, d: null, e: null };
   function updateCameras(dt) {
     const k = 1 - Math.exp(-dt * 4.5);
-    const hTot = g.footLen + g.L;
-    const tanH = Math.tan(T.MathUtils.degToRad(camMain.fov / 2));
     const I = geoInfo;
+    // v2.0: the Gedackt's top board and its stopper drawn all the way out (handle included) stay in the frame at every
+    // Open/Stopped (the frame does not breathe while the knob turns), with room for the labels above it
+    const wood = woodG && woodG.visible && I && I.wood;
+    const hTot = g.footLen + g.L + (wood ? I.topExt + 0.45 * I.stH + 2.0 * I.stH : 0);
+    const tanH = Math.tan(T.MathUtils.degToRad(camMain.fov / 2));
     tiltG.updateMatrixWorld(true);
     // the leaning axis in world space: toe (pivot) and top
     const A = vTmp.c.set(0, 0, 0).applyMatrix4(tiltG.matrixWorld);
@@ -864,7 +1021,7 @@ OKL.pipe3d = (function () {
     const spanV = Math.abs(B.y - A.y) + 2 * I.r * Math.abs(axis.x);
     const spanH = Math.abs(B.x - A.x) + 2 * I.r;
     // full view rig: fit the leaning pipe, centred a little left of the middle (HUD room on the right)
-    const Df = Math.max((spanV * 1.16 / 2) / tanH, (spanH / 2) / (tanH * camMain.aspect * 0.5)) / st.zoom;
+    const Df = Math.max((spanV * (wood ? 1.28 : 1.16) / 2) / tanH, (spanH / 2) / (tanH * camMain.aspect * 0.5)) / st.zoom;
     st.camD += (Df - st.camD) * k;
     const vw = 2 * st.camD * tanH * camMain.aspect;
     // mouth rig (world position of the mouth centre)

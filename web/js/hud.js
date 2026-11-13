@@ -141,7 +141,7 @@ OKL.hud = (function () {
     seg(off(top, rpx, 14), off(top, -rpx, 14));
     seg(off(top, rpx, 10), off(top, rpx, 18)); seg(off(top, -rpx, 10), off(top, -rpx, 18));
     const dq = off(top, 0, 27);
-    tag('Ø ' + fmtLen(g.d), dq.x, dq.y, C.fg2, 'center');
+    tag(g.stop === 1 ? fmtLen(g.H) + ' × ' + fmtLen(g.depth) : 'Ø ' + fmtLen(g.d), dq.x, dq.y, C.fg2, 'center');     // (v2.0: a wooden box)
 
     // ---------------- callouts (left of the ruler)
     const lxAt = (p) => off(p, dR).x - 58;
@@ -149,15 +149,19 @@ OKL.hud = (function () {
     const facing = P.mouthFacing();
     const lxm = lxAt(at(g.W * 0.5));
     leader(mouth.x, mouth.y, lxm, mouth.y - 26, facing > -0.1 ? C.amber : C.dim);
-    label2(lxm, mouth.y - 26, 'MOUTH', 'W ' + fmtLen(g.W) + ' · H ' + fmtLen(g.H), facing > -0.1 ? C.amber : C.dim);
+    label2(lxm, mouth.y - 26, 'MOUTH', 'W ' + fmtLen(g.W) + ' · H ' + fmtLen(g.H) + (g.stop === 1 && g.archRise > 0 ? ' · arch ' + fmtLen(g.archRise) : ''),
+           facing > -0.1 ? C.amber : C.dim);
     const lxt = lxAt(bot);
     leader(bot.x - 3, bot.y, lxt, bot.y - 8, C.dim);
     label2(lxt, bot.y - 8, 'TOE HOLE', 'Ø ' + fmtLen(g.toe), C.fg2);
     const topP = P.projectTilt(-r * 0.7, g.L, 0, pa);
-    const mtxt = g.morph < 0.02 ? 'OPEN' : (g.morph > 0.98 ? 'STOPPED' : 'CLOSING ' + (g.morph * 100).toFixed(0) + '%');
+    const ged = g.stop === 1;            // v2.0: the Gedackt's stopper
+    const mtxt = ged ? (g.morph > 0.98 ? 'STOPPER IN' : (g.morph < 0.02 ? 'STOPPER OUT · OPEN' : 'STOPPER DRAWN · ' + (g.morph * 100).toFixed(0) + '% STOPPED'))
+      : (g.morph < 0.02 ? 'OPEN' : (g.morph > 0.98 ? 'STOPPED' : 'CLOSING ' + (g.morph * 100).toFixed(0) + '%'));
     const lxp = lxAt(top);
-    leader(topP.x, topP.y, lxp, topP.y + 18, g.morph > 0.02 ? C.amber : C.dim);
-    label2(lxp, topP.y + 18, 'TOP', mtxt, g.morph > 0.02 ? C.amber : C.fg2);
+    const hot = ged ? g.morph < 0.98 : g.morph > 0.02;
+    leader(topP.x, topP.y, lxp, topP.y + 18, hot ? C.amber : C.dim);
+    label2(lxp, topP.y + 18, ged ? 'STOPPER' : 'TOP', mtxt, hot ? C.amber : C.fg2);
     if (s.G.sideHole > 0.02) {
       const y0 = g.W + I.A * 1.2, y1 = g.L - 1.2 * r;
       const yh = y0 + (Math.max(y0, y1) - y0) * s.G.sideHole;
@@ -248,7 +252,7 @@ OKL.hud = (function () {
     text(OKL.noteLabel(g.midi), x, y + 34, '600 40px ' + DISP, '#eafaff');
     cx.font = '600 40px ' + DISP;
     const nw = cx.measureText(OKL.noteLabel(g.midi)).width;
-    text("PRINZIPAL 8'", x + nw + 12, y + 14, '600 10px ' + DISP, C.dim);
+    text(g.stop === 1 ? "GEDACKT 8' · WOOD" : "PRINZIPAL 8'", x + nw + 12, y + 14, '600 10px ' + DISP, C.dim);
     text('MIDI ' + g.midi + ' · key ' + g.ftarget.toFixed(2) + ' Hz', x + nw + 12, y + 30, '500 11px ' + MONO, C.fg2);
     let line = '';
     if (s.mallet) {
@@ -257,7 +261,8 @@ OKL.hud = (function () {
       line = top ? 'STRUCK · strongest ' + top[0].toFixed(1) + ' Hz (n ' + top[3] + ', m ' + top[4] + ')   air column ' + (s.mallet.fres || 0).toFixed(1) + ' Hz'
                  : 'STRUCK · strike a key   air column ' + (s.mallet.fres || 0).toFixed(1) + ' Hz';
       text(line, x, y + 56, '500 12px ' + MONO, top ? C.amber : C.dim);
-      text('L ' + fmtLen(g.Lphys || g.L) + ' · Ø ' + fmtLen(g.d) + ' · wall ' + (ml ? fmtLen(ml.h) : '—') + ' · ' + (s.mallet.metal || ''), x, y + 73, '400 11px ' + MONO, C.fg2);
+      text('L ' + fmtLen(g.Lphys || g.L) + (g.stop === 1 ? ' · ' + fmtLen(g.H) + ' × ' + fmtLen(g.depth) + ' · board ' : ' · Ø ' + fmtLen(g.d) + ' · wall ')
+        + (ml ? fmtLen(ml.h) : '—') + ' · ' + (s.mallet.metal || ''), x, y + 73, '400 11px ' + MONO, C.fg2);
       return;
     }
     if (an && an.f > 0) {
@@ -265,7 +270,8 @@ OKL.hud = (function () {
       line = 'f ' + an.f.toFixed(2) + ' Hz   vs key ' + (cents >= 0 ? '+' : '−') + Math.abs(cents).toFixed(1) + ' ¢   MODE ' + an.mode;
     } else line = 'f —   (not sounding)';
     text(line, x, y + 56, '500 12px ' + MONO, an && an.f > 0 ? C.cyan : C.dim);
-    text('L ' + fmtLen(g.L) + ' · Ø ' + fmtLen(g.d) + ' · mouth ' + fmtLen(g.H) + ' × ' + fmtLen(g.W), x, y + 73, '400 11px ' + MONO, C.fg2);
+    text('L ' + fmtLen(g.L) + (g.stop === 1 ? ' · ' + fmtLen(g.H) + ' × ' + fmtLen(g.depth) : ' · Ø ' + fmtLen(g.d)) + ' · mouth ' + fmtLen(g.H) + ' × ' + fmtLen(g.W),
+         x, y + 73, '400 11px ' + MONO, C.fg2);
     if (s.src) {
       const tw = tag(s.src, x, y + 95, s.srcColor || C.amber);
       if (s.rec) text(s.rec, x + tw + 8, y + 99, '400 10.5px ' + MONO, C.amber);
@@ -306,7 +312,8 @@ OKL.hud = (function () {
       ['F', has ? ml.fPeak.toFixed(ml.fPeak < 10 ? 2 : 0) + ' N' : '—', 'peak force'],
       ['t_c', has ? (ml.tContact * 1e3).toFixed(3) + ' ms' : '—', 'contact'],
       ['m', ml ? (ml.mass * 1e3).toFixed(1) + ' g' : '—', s.mallet.head || 'head'],
-      ['K', ml ? (ml.K / 1e9).toFixed(ml.K < 1e9 ? 3 : 1) + ' GN/m^1.5' : '—', 'Hertz'],
+      ['K', ml ? (ml.K / 1e9).toFixed(ml.K < 1e9 ? 3 : 1) + ' GN/m^' + (ml.p && ml.p !== 1.5 ? ml.p.toFixed(2) : '1.5') : '—',
+        ml && ml.p && ml.p !== 1.5 ? 'wool' : 'Hertz'],                 // (v2.0: a yarn head's power law)
       ['h', ml ? fmtLen(ml.h) : '—', 'wall'],
       ['modes', ml ? ml.nActive + ' / ' + ml.nModes : '—', 'ringing'],
       ['f_air', (s.mallet.fres || 0).toFixed(1) + ' Hz', 'air column'],

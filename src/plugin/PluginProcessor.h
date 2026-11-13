@@ -41,9 +41,9 @@ public:
         return t > 0 ? std::ceil (t) : 6.0;
     }
 
-    /* P5: the factory presets (experiment recipes, Presets.h) as the host's programs */
+    /* the host's programs (V2: the stops, Presets.h; selecting one sets every parameter to that stop as built) */
     int getNumPrograms() override;
-    int getCurrentProgram() override { return currentProgram.load(); }
+    int getCurrentProgram() override { return currentStop(); }
     void setCurrentProgram (int index) override;
     const juce::String getProgramName (int index) override;
     void changeProgramName (int, const juce::String&) override {}
@@ -57,7 +57,10 @@ public:
     okl::MidiRouter& midi() { return router; }
     juce::RangedAudioParameter* param (int index) const { return params[(size_t) index]; }
     const okl::RoomInfo& engineRoom() const { return engine.room(); }
-    void resetAllParameters();                 // RESET: every parameter back to its default
+    void resetAllParameters();                 // RESET: every parameter back to its default (V2: the stop's; the stop stays)
+    void resetParameter (int index);           // v1.1.1: one parameter back to its default (its RESET button)
+    int currentStop() const;                   // V2: the "stop" parameter
+    double paramDefault (int index) const;     // V2: what RESET sets: the default of the stop in use
     void panic() { panicRequest.store (true); }
     /* latest telemetry + focus mouth signal (n <= 512); false if nothing new could be read */
     bool readTelemetry (okl::Telemetry& t, float* scope, int n);
@@ -80,7 +83,25 @@ public:
     void resetAudioStats() { statsReset.store (true); }
     float padPressure (int bank, int i) const { return bank == 0 ? router.padA[(size_t) i].load() : router.padB[(size_t) i].load(); }
 
+    // ---- v2.0: tuning from Scala files (message thread). The texts are kept in the state; the Temperament knob
+    // goes to Custom when a scale is loaded
+    struct TuningFiles
+    {
+        juce::String scl, sclName, kbm, kbmName;    // texts (UTF-8) and file names
+        juce::String description, error;            // the scale's description line; why the last file was refused
+        int notes = 0;
+    };
+    /* kbm: a keyboard mapping, else a scale; false (and files().error) if the parser refuses it: the tuning stays */
+    bool loadTuningText (bool kbm, const juce::String& text, const juce::String& name);
+    bool loadTuningFile (bool kbm, const juce::File& f);
+    void clearTuning (bool kbmOnly);
+    const TuningFiles& tuningFiles() const { return tuneFiles; }
+    const okl::CustomTuning& customTuning() const { return tuneMsg; }
+    int tuningSerial() const { return tuneSerial; }          // bumps on every load, clear or refusal
+
 private:
+    bool applyTuning (const juce::String& scl, const juce::String& kbm, bool report);
+    void pushTuning();
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     void midiParam (int index, double norm) override;       // audio thread, from the router
     void timerCallback() override;                           // flushes controller moves to the host
@@ -92,7 +113,7 @@ private:
     std::array<std::atomic<float>*, kMaxParams> raw {};
     std::array<juce::RangedAudioParameter*, kMaxParams> params {};
     std::array<std::atomic<float>, kMaxParams> midiPending;   // normalised; < 0 = none
-    std::atomic<int> currentProgram { 0 };
+    int stopIndex = -1;                                       // V2: the "stop" parameter's index
     okl::Globals lastG;
     bool haveLastG = false;
     std::atomic<bool> panicRequest { false };
@@ -124,6 +145,12 @@ private:
     std::atomic<bool> statsReset { false };
     juce::int64 lastStartTicks = 0;
     double lastBudget = 0;
+    // v2.0 tuning: the message thread's copy, and the one handed to the audio thread (it only try-locks)
+    TuningFiles tuneFiles;
+    okl::CustomTuning tuneMsg, tuneShared;
+    juce::SpinLock tuneLock;
+    bool tuneDirty = false;
+    int tuneSerial = 0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OkumuLabProcessor)
 };

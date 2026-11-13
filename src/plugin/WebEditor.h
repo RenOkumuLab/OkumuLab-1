@@ -7,13 +7,18 @@
  * spectrogram) and focus-pipe mouth samples (pitch, harmonics), the latest
  * period snapshot of the bore, parameter values changed by the host or a
  * controller, controller tags, MIDI activity, pad pressures.
- * Page -> C++ (event "okl"): ready, param, midi, reset, panic, learn, fps, log.
+ * Page -> C++ (event "okl"): ready, param, midi, reset, resetParam (one row's
+ * RESET button), panic, learn, fps, log; v2.0: tuningBrowse (a file dialog for a
+ * .scl or .kbm), tuningLoad (a file dropped on the page, as text), tuningClear.
+ * C++ -> page, t = "tuning": every key's tuning and the loaded files, when they change.
  *
  * The audio thread never waits for the screen: everything passes through the
  * processor's lock-free queues and seqlocks; this editor reads them on its timer.
  *
  * OKL_PERFTEST=<report.json> (Standalone): plays a scripted test, measures the
- * screen's frame rate and the audio callbacks, writes the report and quits.
+ * screen's frame rate and the audio callbacks, presses one row's RESET button on
+ * the page, selects the Gedackt in the stop menu (V2) and plays and resets it,
+ * writes the report and quits.
  */
 #pragma once
 
@@ -45,6 +50,8 @@ private:
     void timerCallback() override;
     void sendInit();
     void sendFrame();
+    void sendTuning();          // v2.0: the tuning of every key, the loaded Scala files
+    void browseTuning (bool kbm);
     void perfTest (double ms);
     void writePerfReport();
 
@@ -58,6 +65,9 @@ private:
     std::array<double, OkumuLabProcessor::kMaxParams> gestureUntil {};
     uint32_t midiRead = 0, capSerial = 0;
     int lastPadChannel = -100, lastProgram = -1;
+    int lastTuneSerial = -1;                    // v2.0: what the page was last told about the tuning
+    float lastTemper = -1.0f, lastPitchA = -1.0f;
+    std::unique_ptr<juce::FileChooser> chooser;
     std::vector<float> outTmp, sigTmp;
     okl::PeriodCapture cap;
 
@@ -71,6 +81,8 @@ private:
     std::vector<FpsSample> fpsSamples;
     juce::StringArray jsLog;
     juce::var screenInfo;
+    juce::DynamicObject::Ptr resetCheck;    // v1.1.1: a row's RESET button pressed on the page during the session
+    juce::DynamicObject::Ptr stopCheck;     // V2: the stop menu: the Gedackt selected on the page, played, a RESET under it
 
     juce::WebBrowserComponent browser;      // last: destroyed first (its callbacks use the members above)
 

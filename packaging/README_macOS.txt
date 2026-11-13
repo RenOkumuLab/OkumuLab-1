@@ -1,7 +1,7 @@
 OkumuLab 1  v@VERSION@  (macOS 10.15 or later, Apple silicon and Intel)
 
-A physical model of a Prinzipal 8' flue organ pipe (VST3 / Audio Unit instrument and standalone app).
-オルガンのフルーパイプ（Prinzipal 8'）の物理モデル音源です。
+A physical model of organ flue pipes, the Prinzipal 8' and the Gedackt 8' (VST3 / Audio Unit instrument and standalone app).
+オルガンのフルーパイプ（Prinzipal 8' と Gedackt 8'）の物理モデル音源です。
 
 ■ Contents / 入っているもの
   OkumuLab 1.vst3        VST3 plugin / VST3 プラグイン

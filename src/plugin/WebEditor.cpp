@@ -175,7 +175,18 @@ void WebEditor::onMessage (const juce::var& m)
         if (b && b->size() >= 3) proc.pushUiMidi ((int) (*b)[0], (int) (*b)[1], (int) (*b)[2]);
     }
     else if (t == "reset") proc.resetAllParameters();
-    else if (t == "preset") proc.setCurrentProgram ((int) m["i"]);          // P5: an experiment recipe
+    else if (t == "resetParam")                                              // v1.1.1: a row's RESET button
+    {
+        const int idx = paramIndex (m["key"].toString().toRawUTF8());
+        if (idx < 0) return;
+        if (gestureUntil[(size_t) idx] > 0)                                  // a slider move still open: close it first
+        {
+            proc.param (idx)->endChangeGesture();
+            gestureUntil[(size_t) idx] = 0;
+        }
+        proc.resetParameter (idx);
+    }
+    else if (t == "preset") proc.setCurrentProgram ((int) m["i"]);          // V2: a stop (the host's program)
     else if (t == "panic") proc.panic();
     else if (t == "learn")
     {
@@ -195,6 +206,57 @@ void WebEditor::onMessage (const juce::var& m)
         jsLog.add (m["msg"].toString());
         DBG (m["msg"].toString());
     }
+    // v2.0: Scala files: a file dialog, a file dropped on the page (its text), or none
+    else if (t == "tuningBrowse") browseTuning (m["kind"].toString() == "kbm");
+    else if (t == "tuningLoad")
+    {
+        const auto text = m["text"].toString();
+        if (text.getNumBytesAsUTF8() <= (1 << 20)) proc.loadTuningText (m["kind"].toString() == "kbm", text, m["name"].toString());
+    }
+    else if (t == "tuningClear") proc.clearTuning (m["kind"].toString() == "kbm");
+}
+
+void WebEditor::browseTuning (bool kbm)
+{
+    chooser = std::make_unique<juce::FileChooser> (kbm ? "Keyboard mapping (Scala .kbm)" : "Scale (Scala .scl)", juce::File(),
+                                                   kbm ? "*.kbm" : "*.scl");
+    chooser->launchAsync (juce::FileBrowserComponent::openMode | juce::FileBrowserComponent::canSelectFiles,
+                          [this, kbm] (const juce::FileChooser& fc) {
+                              const auto f = fc.getResult();
+                              if (f != juce::File()) proc.loadTuningFile (kbm, f);
+                          });
+}
+
+void WebEditor::sendTuning()
+{
+    const auto& tf = proc.tuningFiles();
+    const auto& ct = proc.customTuning();
+    Globals g;
+    g.temperament = proc.apvts.getRawParameterValue ("temperament")->load();
+    g.pitchA = proc.apvts.getRawParameterValue ("pitchA")->load();
+    auto o = obj();
+    o->setProperty ("t", "tuning");
+    o->setProperty ("scl", tf.sclName);
+    o->setProperty ("kbm", tf.kbmName);
+    o->setProperty ("description", tf.description);
+    o->setProperty ("notes", tf.notes);
+    o->setProperty ("error", tf.error);
+    o->setProperty ("loaded", ct.valid);
+    o->setProperty ("usesPitch", ct.usesPitch);
+    juce::Array<juce::var> semis, mapped;
+    for (int k = 0; k < 128; ++k)
+    {
+        double s = 0.0;
+        const bool on = keyTuning (g, ct, k, s);
+        semis.add (s);
+        mapped.add (on);
+    }
+    o->setProperty ("semis", semis);
+    o->setProperty ("mapped", mapped);
+    browser.emitEventIfBrowserIsVisible ("okl", o.get());
+    lastTuneSerial = proc.tuningSerial();
+    lastTemper = (float) g.temperament;
+    lastPitchA = (float) g.pitchA;
 }
 
 void WebEditor::sendInit()
@@ -211,16 +273,18 @@ void WebEditor::sendInit()
         host << " · " << hostType.getHostDescription();
     o->setProperty ("host", host);
     o->setProperty ("padChannel", proc.midi().padChannel.load());
-    auto params = obj(), cc = obj();
+    auto params = obj(), defaults = obj(), cc = obj();
     for (int i = 0; i < kNumParams; ++i)
     {
         const float v = proc.apvts.getRawParameterValue (kParamDefs[i].id)->load();
         params->setProperty (kParamDefs[i].id, v);
+        defaults->setProperty (kParamDefs[i].id, proc.paramDefault (i));     // v1.1.1: what RESET sets (V2: the stop's)
         lastSent[(size_t) i] = v;
         lastCc[(size_t) i] = proc.controllerText (i);
         cc->setProperty (kParamDefs[i].id, lastCc[(size_t) i]);
     }
     o->setProperty ("params", params.get());
+    o->setProperty ("defaults", defaults.get());
     o->setProperty ("cc", cc.get());
     // MALLET: the material tables (what the panel and the HUD show about the metal and the head)
     {
@@ -238,12 +302,24 @@ void WebEditor::sendInit()
             const auto& hp = headProps (i);
             auto ho = obj();
             ho->setProperty ("name", juce::String::fromUTF8 (hp.name)); ho->setProperty ("E", hp.E); ho->setProperty ("rho", hp.rho); ho->setProperty ("e", hp.e);
+            ho->setProperty ("p", hp.p); ho->setProperty ("K", hp.K);          // V2: the contact law (yarn: a measured power law)
             heads.add (ho.get());
         }
         o->setProperty ("metals", metals);
         o->setProperty ("heads", heads);
+        // V2: the woods of a wooden pipe
+        juce::Array<juce::var> woods;
+        for (int i = 0; i < kNumWoods; ++i)
+        {
+            const auto& wp = woodProps (i);
+            auto wo = obj();
+            wo->setProperty ("name", juce::String::fromUTF8 (wp.name)); wo->setProperty ("EL", wp.EL); wo->setProperty ("ET", wp.ETL * wp.EL);
+            wo->setProperty ("rho", wp.rho); wo->setProperty ("eta", wp.eta);
+            woods.add (wo.get());
+        }
+        o->setProperty ("woods", woods);
     }
-    // P5: experiment recipes, and the names of the matrix sources and targets
+    // the programs (V2: the stops), and the names of the matrix sources and targets
     {
         juce::Array<juce::var> pl;
         for (const auto& pr : factoryPresets())
@@ -276,6 +352,7 @@ void WebEditor::sendInit()
     }
     midiRead = proc.midi().messageCount.load();
     browser.emitEventIfBrowserIsVisible ("okl", o.get());
+    sendTuning();                                    // v2.0
     // the streams start now
     proc.readOutput (outTmp.data(), (int) outTmp.size());
     proc.readFocusSignal (sigTmp.data(), (int) sigTmp.size());
@@ -334,6 +411,9 @@ void WebEditor::sendFrame()
         f->setProperty ("morph", tl.morph); f->setProperty ("ftarget", tl.fTarget); f->setProperty ("ampcap", tl.ampcap);
         f->setProperty ("bjet", tl.bJet);
         f->setProperty ("pchest", tl.pchest);
+        // V2: the focus pipe's stop, a rectangular body's depth, its ears, arched cut-up, wood
+        f->setProperty ("stop", tl.focusStop); f->setProperty ("depth", tl.depth); f->setProperty ("ears", tl.ears);
+        f->setProperty ("arch", tl.arch); f->setProperty ("wood", tl.wood);
         // P3 pitch-lock servo
         f->setProperty ("servo", tl.servoCents); f->setProperty ("locked", tl.locked);
         f->setProperty ("lockCents", tl.cents); f->setProperty ("fMeas", tl.fMeas); f->setProperty ("ratio", tl.ratio);
@@ -341,6 +421,7 @@ void WebEditor::sendFrame()
     }
     else te->setProperty ("focus", juce::var());
     te->setProperty ("excite", tl.excite);
+    te->setProperty ("stop", tl.stop);
     // P5: modulation matrix: the sources as the focus voice sees them, and each slot's output
     if (tl.focusId >= 0)
     {
@@ -359,7 +440,7 @@ void WebEditor::sendFrame()
         auto mo = obj();
         mo->setProperty ("strikes", ml.strikes); mo->setProperty ("contacts", ml.contacts);
         mo->setProperty ("v0", ml.v0); mo->setProperty ("fPeak", ml.fPeak); mo->setProperty ("tContact", ml.tContact);
-        mo->setProperty ("h", ml.h); mo->setProperty ("K", ml.K); mo->setProperty ("mass", ml.mass);
+        mo->setProperty ("h", ml.h); mo->setProperty ("K", ml.K); mo->setProperty ("p", ml.p); mo->setProperty ("mass", ml.mass);
         mo->setProperty ("nModes", ml.nModes); mo->setProperty ("nActive", ml.nActive); mo->setProperty ("forceSpan", ml.forceSpan);
         auto arr = [] (const float* x, int n) { juce::Array<juce::var> a; for (int i = 0; i < n; ++i) a.add (x[i]); return a; };
         mo->setProperty ("force", arr (ml.force, MalletTelemetry::kForce));
@@ -440,11 +521,23 @@ void WebEditor::sendFrame()
     }
     const int learn = rt.learnParam.load();
     o->setProperty ("learn", learn >= 0 && learn < kNumParams ? juce::var (kParamDefs[learn].id) : juce::var());
-    if (proc.getCurrentProgram() != lastProgram) { lastProgram = proc.getCurrentProgram(); o->setProperty ("program", lastProgram); }
+    if (proc.getCurrentProgram() != lastProgram)
+    {
+        // V2: another stop: its defaults are what RESET sets now
+        lastProgram = proc.getCurrentProgram();
+        o->setProperty ("program", lastProgram);
+        auto defaults = obj();
+        for (int i = 0; i < kNumParams; ++i) defaults->setProperty (kParamDefs[i].id, proc.paramDefault (i));
+        o->setProperty ("defaults", defaults.get());
+    }
     const int pc = rt.padChannel.load();
     if (pc != lastPadChannel) { o->setProperty ("padChannel", pc); lastPadChannel = pc; }
 
     browser.emitEventIfBrowserIsVisible ("okl", o.get());
+    // v2.0: the tuning, when a file, the Temperament or the Pitch changed
+    if (proc.tuningSerial() != lastTuneSerial || proc.apvts.getRawParameterValue ("temperament")->load() != lastTemper
+        || proc.apvts.getRawParameterValue ("pitchA")->load() != lastPitchA)
+        sendTuning();
 }
 
 // ---------------------------------------------------------------- OKL_PERFTEST
@@ -477,8 +570,100 @@ void WebEditor::perfTest (double ms)
         for (int n : { 36, 48, 55, 60, 64 }) proc.pushUiMidi (0x80, n, 0);
         proc.resetAllParameters();
     }
-    if (at (4, 13000))
+    // v1.1.1: a row's RESET button. Cut-up and Labium offset leave their defaults, then the page presses Cut-up's button:
+    // only Cut-up returns, and only Labium offset's button stays lit
+    const juce::String rowState ("const q = (k) => document.querySelector('.prm[data-key=\"' + k + '\"]');"
+                                 "const lit = (k) => !q(k).classList.contains('atdef');"
+                                 "const s = { cutupLit: lit('cutup'), y0bLit: lit('y0b'), cutupShown: OKL.params.ctx.G.cutup,"
+                                 " rows: document.querySelectorAll('.prm').length, buttons: document.querySelectorAll('.prm > .prm-r').length };");
+    auto keep = [this] (const char* name) {
+        return [this, name] (juce::WebBrowserComponent::EvaluationResult r) {
+            if (resetCheck == nullptr) return;
+            if (const auto* v = r.getResult()) resetCheck->setProperty (name, *v);
+            else if (const auto* e = r.getError()) resetCheck->setProperty (name, "error: " + e->message);
+        };
+    };
+    if (at (4, 11000))
     {
+        resetCheck = obj();
+        for (auto [id, v] : { std::pair<const char*, float> { "cutup", 1.6f }, { "y0b", 1.0f } })
+        {
+            auto* p = proc.param (paramIndex (id));
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (p->convertTo0to1 (v));
+            p->endChangeGesture();
+        }
+    }
+    if (at (5, 11800))
+        browser.evaluateJavascript ("(() => { " + rowState + " q('cutup').querySelector('.prm-r').click(); return s; })()", keep ("before"));
+    if (at (6, 12600) && resetCheck != nullptr)
+    {
+        resetCheck->setProperty ("cutup", proc.apvts.getRawParameterValue ("cutup")->load());
+        resetCheck->setProperty ("y0b", proc.apvts.getRawParameterValue ("y0b")->load());
+        browser.evaluateJavascript ("(() => { " + rowState + " return s; })()", keep ("after"));
+    }
+    /* V2: the stop menu (where the experiment recipes were): the page selects the Gedackt; every knob goes to the Gedackt as
+       built (closed 100 %, ears, arch 0 %, its scale and wall loss), the panels show its wood instead of the metal; a key plays
+       a Gedackt pipe (keys outside MIDI 24-96 nothing); Open/Stopped moved and its RESET button pressed returns to 100 % */
+    const juce::String stopState ("const q = (k) => document.querySelector('.prm[data-key=\"' + k + '\"]');"
+                                  "const shown = (k) => !!q(k) && getComputedStyle(q(k)).display !== 'none';"
+                                  "const sel = document.getElementById('presetSel');"
+                                  "const s = { sel: sel ? sel.value : null, options: sel ? sel.options.length : 0, label: sel ? sel.options[sel.selectedIndex].text : '',"
+                                  " stop: OKL.params.ctx.G.stop, morph: OKL.params.ctx.G.morph, morphLit: !q('morph').classList.contains('atdef'),"
+                                  " metalShown: shown('metal'), woodShown: shown('wood'), earsShown: shown('ears'), archShown: shown('arch'),"
+                                  " morphText: q('morph').querySelector('.prm-v').textContent, rows: document.querySelectorAll('.prm').length };");
+    auto keepStop = [this] (const char* name) {
+        return [this, name] (juce::WebBrowserComponent::EvaluationResult r) {
+            if (stopCheck == nullptr) return;
+            if (const auto* v = r.getResult()) stopCheck->setProperty (name, *v);
+            else if (const auto* e = r.getError()) stopCheck->setProperty (name, "error: " + e->message);
+        };
+    };
+    if (at (7, 13400))
+    {
+        stopCheck = obj();
+        stopCheck->setProperty ("stopBefore", proc.currentStop());
+        browser.evaluateJavascript ("(() => { " + stopState + " sel.value = '1'; sel.dispatchEvent(new Event('change')); return s; })()", keepStop ("pageBefore"));
+    }
+    if (at (8, 14600) && stopCheck != nullptr)
+    {
+        for (const char* id : { "stop", "morph", "ears", "arch", "loss", "scaleHT", "mouthFrac", "wood" })
+            stopCheck->setProperty (id, proc.apvts.getRawParameterValue (id)->load());
+        stopCheck->setProperty ("program", proc.getCurrentProgram());
+        stopCheck->setProperty ("programName", proc.getProgramName (proc.getCurrentProgram()));
+        browser.evaluateJavascript ("(() => { " + stopState + " return s; })()", keepStop ("page"));
+        proc.pushUiMidi (0x90, 60, 100);
+        proc.pushUiMidi (0x90, 23, 100);
+        proc.pushUiMidi (0x90, 97, 100);
+    }
+    if (at (9, 15400) && stopCheck != nullptr)
+    {
+        Telemetry tl;
+        proc.readTelemetry (tl, nullptr, 0);
+        stopCheck->setProperty ("voices", tl.nVox);
+        stopCheck->setProperty ("focusMidi", tl.focusMidi);
+        stopCheck->setProperty ("focusStop", tl.focusStop);
+        stopCheck->setProperty ("focusDepth", tl.depth);
+        for (int n : { 60, 23, 97 }) proc.pushUiMidi (0x80, n, 0);
+        auto* p = proc.param (paramIndex ("morph"));
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 (0.4f));
+        p->endChangeGesture();
+    }
+    if (at (10, 16200) && stopCheck != nullptr)
+        browser.evaluateJavascript ("(() => { " + stopState + " q('morph').querySelector('.prm-r').click(); return s; })()", keepStop ("moved"));
+    if (at (11, 17000) && stopCheck != nullptr)
+        browser.evaluateJavascript ("(() => { " + stopState + " return s; })()", [this] (juce::WebBrowserComponent::EvaluationResult r) {
+            if (stopCheck == nullptr) return;
+            // the plugin's value read with the page's answer: the button's message came before it, however slow the page
+            stopCheck->setProperty ("morphAfterReset", proc.apvts.getRawParameterValue ("morph")->load());
+            if (const auto* v = r.getResult()) stopCheck->setProperty ("afterReset", *v);
+            else if (const auto* e = r.getError()) stopCheck->setProperty ("afterReset", "error: " + e->message);
+        });
+    // the report once the page has answered (a slow page: up to 25 s)
+    if (perfStage == 12 && ms >= 17800 && (stopCheck == nullptr || stopCheck->hasProperty ("afterReset") || ms >= 25000))
+    {
+        ++perfStage;
         writePerfReport();
         perfPath.clear();
         if (juce::JUCEApplicationBase::isStandaloneApp())
@@ -521,6 +706,8 @@ void WebEditor::writePerfReport()
     au->setProperty ("dsp_load_now", proc.cpuLoad());
     r->setProperty ("audio", au.get());
     r->setProperty ("screen", screenInfo);
+    r->setProperty ("reset_button", resetCheck.get());
+    r->setProperty ("stop_menu", stopCheck.get());
     r->setProperty ("cpp_send_ms_avg", sendN ? sendMsSum / sendN : 0.0);
     r->setProperty ("cpp_send_ms_max", sendMsMax);
     juce::Array<juce::var> logs;

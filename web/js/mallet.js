@@ -17,6 +17,7 @@ OKL.mallet = (function () {
      radiation, the air column), the mouth (the air column's end correction), wall loss (the air column) */
   const ACTIVE = new Set(['scaleHT', 'morph', 'glide', 'gas', 'tempC', 'cMult', 'rhoMult', 'cutup', 'mouthFrac', 'vFollow',
     'loss', 'reverb', 'metal', 'wallMult', 'head', 'headD', 'strikePos', 'damper',
+    'wood', 'ears',                                                // V2: the wooden box's boards; the ears (the air column's mouth)
     'sideHole',                                                    // P5: the hole opens the air column the wall drives
     'modAmt1', 'modAmt2', 'modAmt3', 'modAmt4', 'lfo1Rate', 'lfo2Rate', 'envAttack', 'envDecay']);   // the matrix moves the knobs above
   const MOVED = ['loss', 'reverb'];          // shown in the MALLET panel while it replaces LAB
@@ -27,8 +28,8 @@ OKL.mallet = (function () {
     'an-under': ['not speaking<b>UNDER</b>', 'felt on<b>DAMPER</b>'],
     'an-lock': ['length corr.<b>LOCK</b>', 'struck: off<b>LOCK</b>'],
   };
-  const HEAD_COL = [0x2a1d1b, 0xe6a63c, 0xc9a26b, 0xd8b04a];
-  const HEAD_METAL = [0, 0, 0, 1];
+  const HEAD_COL = [0x2a1d1b, 0xe6a63c, 0xc9a26b, 0xd8b04a, 0x8e3b4e];      // (v2.0: yarn, a wine-red wool)
+  const HEAD_METAL = [0, 0, 0, 1, 0];
   let on = false, lastStrikes = -1, hitAt = -1e9;
 
   function setMode(m) {
@@ -71,6 +72,10 @@ OKL.mallet = (function () {
   }
   function headCss(G) { return '#' + (HEAD_COL[Math.round(G.head)] || HEAD_COL[1]).toString(16).padStart(6, '0'); }
   function metalName(G) {
+    if (Math.round(G.stop || 0) === 1) {                           // V2: a wooden pipe
+      const w = OKL.audio && OKL.audio.woods && OKL.audio.woods[Math.round(G.wood || 0)];
+      return w ? w.name : 'wood';
+    }
     const m = OKL.audio && OKL.audio.metals && OKL.audio.metals[Math.round(G.metal)];
     return m ? m.name : '';
   }

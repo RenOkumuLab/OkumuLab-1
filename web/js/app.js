@@ -56,8 +56,8 @@ window.OKL = window.OKL || {};
   /* ------------------------------------------------------------------ notes */
   function send(m) { if (app.engaged) OKL.audio.send(m); }
   function noteOn(midi, vel, src) {
+    if (midi < 24 || midi > 96) return;            // v2.0: the compass of both stops, MIDI 24-96 (the plugin plays nothing outside)
     if (app.mode === 'replay') setMode('live');
-    midi = Math.max(24, Math.min(108, midi));
     const id = 'k' + midi;
     send({ t: 'on', id, midi, vel });
     app.focusId = id; app.focusMidi = midi; app.played = true;
@@ -66,7 +66,7 @@ window.OKL = window.OKL || {};
     resetFocusAnalysis();
   }
   function noteOff(midi) {
-    midi = Math.max(24, Math.min(108, midi));
+    if (midi < 24 || midi > 96) return;
     app.held.delete(midi);
     send({ t: 'off', id: 'k' + midi });
     if (!app.sustain) app.activeNotes.delete(midi);
@@ -92,6 +92,12 @@ window.OKL = window.OKL || {};
     app.gDirty = true;
     OKL.params.refresh();
   }
+  /* v1.1.1: a row's RESET button: that parameter alone back to its default */
+  function resetParam(key) {
+    if (OKL.host === 'plugin') OKL.audio.cmd('resetParam', { key });   // the plugin sets its own default (and tells the host)
+    OKL.params.set(key, OKL.params.byKey[key].def, 'reset');
+  }
+  OKL.params.onReset = resetParam;
 
   function onPad(bank, i, p) {
     if (OKL.host === 'plugin') { if (app.engaged) OKL.audio.pad(bank, i, p); return; }   // pads are MIDI to the plugin's router
@@ -118,7 +124,7 @@ window.OKL = window.OKL || {};
   const PULSE = { cutup: 'mouth', y0b: 'mouth', mouthFrac: 'mouth', morph: 'top', gas: 'atmos', tempC: 'atmos' };
   OKL.params.onChange = (key, v, source) => {
     if (PULSE[key] && app.threeReady) OKL.pipe3d.pulse(PULSE[key]);
-    if (OKL.host === 'plugin' && source !== 'host' && source !== 'init' && app.engaged) OKL.audio.param(key, v);
+    if (OKL.host === 'plugin' && source !== 'host' && source !== 'init' && source !== 'reset' && app.engaged) OKL.audio.param(key, v);
     if (key === 'reverb' && app.engaged) OKL.audio.setReverb(v);
     app.gDirty = true;
   };
@@ -382,7 +388,8 @@ window.OKL = window.OKL || {};
 
   /* ------------------------------------------------------------------ display geometry (smoothed) */
   let geomD = null;
-  const GEO_KEYS = ['d', 'H', 'W', 'h', 'toe', 'footLen', 'L', 'Lphys', 'Leff', 'M', 'fres', 'morph', 'y0', 'c', 'rho', 'pchest', 'kappa', 'ampcap', 'bjet', 'ftarget', 'f0', 'Wdesign', 'pfDesign', 'ising'];
+  const GEO_KEYS = ['d', 'H', 'W', 'h', 'toe', 'footLen', 'L', 'Lphys', 'Leff', 'M', 'fres', 'morph', 'y0', 'c', 'rho', 'pchest', 'kappa', 'ampcap', 'bjet', 'ftarget', 'f0', 'Wdesign', 'pfDesign', 'ising',
+    'depth', 'archRise', 'wall', 'ears', 'dMears'];       // (v2.0: the Gedackt's box, arch, ears)
   function smoothGeom(target, dt) {
     if (!geomD || geomD.midi !== target.midi && !geomD.morphing) geomD = geomD || Object.assign({}, target);
     const k = 1 - Math.exp(-dt * 7);
@@ -392,7 +399,13 @@ window.OKL = window.OKL || {};
       geomD[key] = (typeof c === 'number' && isFinite(c)) ? c + (t - c) * k : t;
     }
     geomD.midi = target.midi; geomD.name = target.name;
+    geomD.stop = target.stop || 0; geomD.woodIdx = target.woodIdx || 0;       // v2.0 (choices: they jump)
     return geomD;
+  }
+
+  /* a key's pipe as the plugin builds it (v2.0: under its tuning, js/tuning.js) */
+  function keyGeometry(midi, G2) {
+    return OKL.host === 'plugin' && OKL.tuning ? OKL.tuning.geometry(E, midi, G2, 96000) : E.displayGeometry(midi, G2, 96000);
   }
 
   /* ------------------------------------------------------------------ ghosts (other sounding pipes) */
@@ -400,12 +413,13 @@ window.OKL = window.OKL || {};
   function ghostList(G2) {
     const out = [];
     if (!app.tel) return out;
-    const key = JSON.stringify([G2.scaleHT, G2.glide, G2.pitchLock, G2.gas, G2.tempC, G2.cMult, G2.morph, G2.cutup, G2.mouthFrac]);
+    const key = JSON.stringify([G2.scaleHT, G2.glide, G2.pitchLock, G2.gas, G2.tempC, G2.cMult, G2.morph, G2.cutup, G2.mouthFrac, G2.stop, G2.ears, G2.arch,
+      OKL.tuning ? OKL.tuning.stamp() : 0]);
     for (const v of app.tel.vox) {
       if (app.tel.focus && v.id === app.tel.focus.id) continue;
       const ck = v.midi + '|' + key;
       let gm = ghostCache.get(ck);
-      if (!gm) { gm = E.displayGeometry(v.midi, G2, 96000); ghostCache.set(ck, gm); if (ghostCache.size > 200) ghostCache.clear(); }
+      if (!gm) { gm = keyGeometry(v.midi, G2); ghostCache.set(ck, gm); if (ghostCache.size > 200) ghostCache.clear(); }
       out.push({ id: v.id, midi: v.midi, geom: gm, level: Math.min(1, v.peak / 0.4), label: OKL.noteLabel(v.midi) });
       if (out.length >= 7) break;
     }
@@ -535,6 +549,9 @@ window.OKL = window.OKL || {};
     tPrev = now;
     if (app.mode === 'replay') replayFrame();
     const Gp = activeG();
+    // v2.0: the stop's own rows (metal or wood)
+    const stopNow = Math.round(G.stop || 0);
+    if (stopNow !== app.stopShown) { app.stopShown = stopNow; OKL.params.setStop(stopNow); ghostCache.clear(); }
     // P5 (plugin): the knobs as the matrix holds them in the focus pipe (drawing only: the plugin plays)
     const Gx = OKL.host === 'plugin' ? OKL.lab.modulate(Gp, app.tel) : Gp;
     OKL.lab.frame(G, Gx, app.tel);
@@ -551,7 +568,7 @@ window.OKL = window.OKL || {};
     // focus pipe geometry
     const tf = app.tel && app.tel.focus;
     const midi = app.focusMidi;
-    const gT = E.displayGeometry(midi, Gg, 96000);
+    const gT = keyGeometry(midi, Gg);
     app.geomT = gT;
     ctx.geom = gT; OKL.params.ctx.geom = gT;
     const g = smoothGeom(gT, dt);

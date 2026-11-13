@@ -1,5 +1,5 @@
 /*
- * OkumuLab 1 — step 5 on the screen (plugin): the modulation matrix and the experiment recipes
+ * OkumuLab 1 — step 5 on the screen (plugin): the modulation matrix and the programs (v2.0: the stops)
  *
  * The matrix runs in the plugin (src/dsp/Engine.cpp): four slots, each moving one knob by
  * amount x source in that knob's own travel, separately for every sounding pipe (velocity,
@@ -7,7 +7,8 @@
  * draws the MATRIX panel over the pipe view (menus for the sources and targets, the amount
  * sliders, the sources of the focus pipe as meters), shows on the side panels where the
  * matrix has moved each knob (amber marker), and lets the 3D view and the HUD draw the pipe
- * as the matrix shapes it. The recipes are the plugin's programs (src/dsp/Presets.cpp).
+ * as the matrix shapes it. The top bar's menu holds the plugin's programs (src/dsp/Presets.cpp): since v2.0 the
+ * stops, Prinzipal 8' and Gedackt 8', in the place and look the experiment recipes had.
  */
 window.OKL = window.OKL || {};
 OKL.lab = (function () {
@@ -106,7 +107,7 @@ OKL.lab = (function () {
     const p = presets[i];
     if (p && announce) {
       const msg = $('tbMsg');
-      if (msg) { msg.innerHTML = '<b>RECIPE</b> ' + p.recipe; msg.title = p.recipe; }
+      if (msg) { msg.innerHTML = '<b>STOP</b> ' + p.name + ' — ' + p.recipe; msg.title = p.recipe; }      // (v2.0: the programs are the stops)
     }
   }
 

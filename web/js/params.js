@@ -29,11 +29,28 @@ window.OKL = window.OKL || {};
 
   /* MALLET (plugin): the material tables come from the plugin (OKL.audio.metals / heads); names as fallback */
   const METAL = ['Common 30%', 'Spotted 50%', 'Tin 75%', 'Zinc', 'Copper'];
-  const HEAD = ['Hard rubber', 'Acrylic', 'Boxwood', 'Brass'];
+  const HEAD = ['Hard rubber', 'Acrylic', 'Boxwood', 'Brass', 'Yarn'];
+  const WOOD = ['White oak', 'Red pine', 'Sitka spruce', 'W. red cedar'];      // V2 (Mallet.cpp kWoods)
+  // v2.0: the temperaments (Tuning.cpp kTemperamentNames), what each one is
+  const TEMPER = ['Equal', 'Pythagorean', 'Meantone 1/4', 'Werckmeister III', 'Kirnberger III', 'Vallotti', 'Young', 'Custom (.scl)'];
+  const TEMPER_SUB = ['12 equal semitones', 'pure fifths, wolf G#–E♭', 'Aron 1523: pure thirds', 'Werckmeister 1691', 'Kirnberger 1779',
+    'Vallotti: six fifths 1/6 P.c.', 'Young 1800: six fifths 1/6 P.c.'];
+  function temperSub(v) {
+    const i = Math.round(v);
+    if (i < 7) return TEMPER_SUB[i] || '';
+    const t = OKL.tuning && OKL.audio && OKL.audio.tuning;
+    return t && t.scl ? t.scl : 'no .scl loaded';
+  }
   const wallOf = (d) => 0.25e-3 + 0.009 * d;                      // default wall thickness (Mallet.cpp)
+  const woodWallOf = (w) => w * 10.5 / 61.8;                       // V2: a wooden pipe's boards (Mallet.cpp woodWallThickness)
+  const gedackt = (c) => Math.round((c && c.G && c.G.stop) || 0) === 1;
   function metalSub(v) {
     const m = OKL.audio && OKL.audio.metals && OKL.audio.metals[Math.round(v)];
     return m ? 'E ' + (m.E / 1e9).toFixed(0) + ' GPa · ρ ' + (m.rho / 1000).toFixed(2) + ' · η ' + m.eta.toExponential(0) : '';
+  }
+  function woodSub(v) {
+    const w = OKL.audio && OKL.audio.woods && OKL.audio.woods[Math.round(v)];
+    return w ? 'E ' + (w.EL / 1e9).toFixed(1) + '/' + (w.ET / 1e9).toFixed(2) + ' GPa · ρ ' + (w.rho / 1000).toFixed(2) : 'along / across the grain';
   }
   function headMass(head, dmm) {
     const hd = OKL.audio && OKL.audio.heads && OKL.audio.heads[Math.round(head)];
@@ -43,6 +60,7 @@ window.OKL = window.OKL || {};
   }
   function headSub(v) {
     const hd = OKL.audio && OKL.audio.heads && OKL.audio.heads[Math.round(v)];
+    if (hd && hd.K > 0) return 'wool · F = K x^' + hd.p.toFixed(2) + ' · K ' + (hd.K / 1e6).toFixed(0) + ' MN/m^' + hd.p.toFixed(2);   // v2.0: yarn
     return hd ? 'E ' + (hd.E >= 1e9 ? (hd.E / 1e9).toFixed(1) + ' GPa' : (hd.E / 1e6).toFixed(0) + ' MPa') + ' · e ' + hd.e.toFixed(2) : '';
   }
 
@@ -95,7 +113,8 @@ window.OKL = window.OKL || {};
       // (v1.1: b is the jet's half-width where it meets the labium, after spreading across the mouth; nicks do not move the lip)
       fmt: (v) => sgn(v, 2), unit: 'b', sub: (v, c) => (c.geom ? sgn(v * (c.geom.y0b1 || 0.4 * c.geom.h) * 1e3, 3) + ' mm' : '') },
     { key: 'mouthFrac', g: 'voice', label: 'Mouth width', en: 'H', min: 0.1, max: 0.31,
-      fmt: (v, c) => (c.geom ? (c.geom.H * 1e3).toFixed(1) : '—'), unit: 'mm', sub: (v) => '1/' + (1 / v).toFixed(2) + ' circ.',
+      fmt: (v, c) => (c.geom ? (c.geom.H * 1e3).toFixed(1) : '—'), unit: 'mm',
+      sub: (v, c) => (gedackt(c) ? '= inside width · 1/' + (1 / v).toFixed(2) : '1/' + (1 / v).toFixed(2) + ' circ.'),
       band: () => [1 / 7, 2 / 7], bandNote: '1/7–2/7 of the circumference' },
     { key: 'noise', g: 'voice', label: 'Turbulence', en: 'NOISE', min: 0, max: 0.06,
       fmt: (v) => (v * 100).toFixed(1), unit: '%h' },
@@ -103,18 +122,31 @@ window.OKL = window.OKL || {};
       fmt: (v, c) => (c.geom ? (c.geom.toe * 1e3).toFixed(1) : '—'), unit: 'mm', sub: (v) => '×' + v.toFixed(2) },
     { key: 'nicking', g: 'voice', label: 'Nicking', en: 'NICKS', min: 0, max: 1, def: 0, plug: true,
       fmt: (v) => pct(v), unit: '%', sub: (v) => (v < 0.02 ? 'unnicked' : 'thicker, calmer jet') },
+    // V2: the Gedackt's mouth parts (they work on the Prinzipal too)
+    { key: 'ears', g: 'voice', label: 'Ears', en: 'EARS', min: 0, max: 1, def: 0, plug: true,
+      fmt: (v) => pct(v), unit: '%', sub: (v, c) => (v < 0.01 ? 'none' : (c.geom && c.geom.dMears ? '+' + (c.geom.dMears * 1e3).toFixed(1) + ' mm end corr.' : 'side ears')) },
+    { key: 'arch', g: 'voice', label: 'Arched cut-up', en: 'ARCH', min: 0, max: 1, def: 0, plug: true,
+      fmt: (v) => pct(v), unit: '%', sub: (v, c) => (v < 0.01 ? 'straight lip' : (c.geom && c.geom.archRise > 0 ? 'rise ' + (c.geom.archRise * 1e3).toFixed(1) + ' mm' : 'no room')) },
 
     // ---- GEOMETRY
     { key: 'scaleHT', g: 'midi', slot: 3, label: 'Scale', en: 'HT', min: -20, max: 16, cc: 76,
-      fmt: (v) => sgn(v, 1), unit: 'HT', sub: (v, c) => (c.geom ? 'Ø ' + (c.geom.d * 1e3).toFixed(1) + ' mm' : '') },
+      fmt: (v) => sgn(v, 1), unit: 'HT',
+      sub: (v, c) => (!c.geom ? '' : (gedackt(c) ? (c.geom.H * 1e3).toFixed(1) + '×' + (c.geom.depth * 1e3).toFixed(1) + ' mm' : 'Ø ' + (c.geom.d * 1e3).toFixed(1) + ' mm')) },
     { key: 'morph', g: 'midi', slot: 4, label: 'Open↔Stopped', en: 'TOP', min: 0, max: 1, cc: 77,
-      fmt: (v) => pct(v), unit: '%', sub: (v) => (v < 0.02 ? 'open' : (v > 0.98 ? 'stopped' : 'impossible')), band: () => [0, 0], bandNote: 'real pipes are 0% or 100%' },
+      fmt: (v) => pct(v), unit: '%',
+      sub: (v, c) => (gedackt(c) ? (v < 0.02 ? 'stopper out' : (v > 0.98 ? 'stopped' : 'stopper drawn')) : (v < 0.02 ? 'open' : (v > 0.98 ? 'stopped' : 'impossible'))),
+      band: (c) => (gedackt(c) ? [1, 1] : [0, 0]), bandNote: 'real pipes are 0% or 100%' },
     { key: 'glide', g: 'shape', label: 'Length glide', en: 'GLIDE', min: -12, max: 12, ctl: 'PB', bipolar: true,
       fmt: (v) => sgn(v, 2), unit: 'st', sub: (v, c) => (c.geom ? 'L ' + (c.geom.L * 1e3).toFixed(0) + ' mm' : '') },
     { key: 'sideHole', g: 'shape', label: 'Side hole', en: 'POS', min: 0, max: 1, vis: true,
       fmt: (v) => (v < 0.02 ? 'OFF' : pct(v)), unit: (v) => (v < 0.02 ? '' : '%'), sub: (v, c) => holeSub(v, c) },
     { key: 'pitchLock', g: 'shape', label: 'Pitch lock', en: 'LOCK', min: 0, max: 1, cc: 85,
       fmt: (v) => pct(v), unit: '%', sub: (v) => (v > 0.99 ? 'on the key' : (v < 0.01 ? 'pure physics' : 'partial')) },
+    // v2.0 (plugin): the tuning (src/dsp/Tuning.h), in the TUNING panel (the top bar's TUNING button), which also loads Scala files
+    { key: 'temperament', g: 'tune', label: 'Temperament', en: 'TEMPER', min: 0, max: 7, step: 1, def: 0, plug: true,
+      fmt: (v) => TEMPER[Math.round(v)] || '?', unit: '', sub: (v) => temperSub(v) },
+    { key: 'pitchA', g: 'tune', label: 'Pitch a¹', en: 'a¹', min: 380, max: 480, def: 440, plug: true,
+      fmt: (v) => v.toFixed(1), unit: 'Hz', sub: (v) => { const c = 1200 * Math.log2(v / 440); return Math.abs(c) < 0.05 ? 'a¹ = 440' : sgn(c, 1) + ' cents re 440'; } },
 
     // ---- ATMOSPHERE
     { key: 'gas', g: 'midi', slot: 6, label: 'Gas', en: 'MIX', min: -1, max: 1, cc: 18, bipolar: true,
@@ -146,18 +178,25 @@ window.OKL = window.OKL || {};
     { key: 'kick', g: 'lab', label: 'Start pulse', en: 'KICK', min: -1.5, max: 0.5, bipolar: true,
       fmt: (v) => sgn(v, 2), unit: '×pf', sub: () => 'start vortex' },
     { key: 'loss', g: 'lab', label: 'Wall loss', en: 'LOSS', min: 0.3, max: 10, curve: 'log',
-      fmt: (v) => '×' + (v / 2.5).toFixed(2), unit: '', sub: () => 'viscous' },
+      // (V2: against the stop's own default: 2.5 x the smooth-wall theory for the metal, 1.27 x for the wood)
+      fmt: (v) => '×' + (v / (BY_KEY.loss.def || 2.5)).toFixed(2), unit: '', sub: (v, c) => (gedackt(c) ? 'wood, ' + v.toFixed(2) + '× theory' : 'viscous') },
     { key: 'reverb', g: 'lab', label: 'Reverb', en: 'REVERB', min: 0, max: 1, cc: 17,
       fmt: (v) => pct(v), unit: '%', sub: () => roomSub() },
 
     // ---- MALLET (plugin): the pipe body struck with a hard mallet
     { key: 'excite', g: null, label: 'Excitation', en: 'EXCITE', min: 0, max: 1, step: 1, def: 0, noRow: true,
       fmt: (v) => (v >= 0.5 ? 'MALLET' : 'WIND'), unit: '' },
-    { key: 'metal', g: 'mallet', label: 'Pipe metal', en: 'METAL', min: 0, max: 4, step: 1, def: 1,
+    // V2: the stop (the top bar's menu, where the experiment recipes were)
+    { key: 'stop', g: null, label: 'Stop', en: 'STOP', min: 0, max: 1, step: 1, def: 0, noRow: true,
+      fmt: (v) => (Math.round(v) === 1 ? "Gedackt 8'" : "Prinzipal 8'"), unit: '' },
+    { key: 'metal', g: 'mallet', label: 'Pipe metal', en: 'METAL', min: 0, max: 4, step: 1, def: 1, stop: 0,
       fmt: (v) => METAL[Math.round(v)] || '?', unit: '', sub: (v) => metalSub(v) },
+    { key: 'wood', g: 'mallet', label: 'Pipe wood', en: 'WOOD', min: 0, max: 3, step: 1, def: 0, stop: 1, plug: true,
+      fmt: (v) => WOOD[Math.round(v)] || '?', unit: '', sub: (v) => woodSub(v) },
     { key: 'wallMult', g: 'mallet', label: 'Wall', en: 'THICK', min: 0.5, max: 2, curve: 'log', def: 1,
-      fmt: (v, c) => (c.geom ? (wallOf(c.geom.d) * v * 1e3).toFixed(2) : '—'), unit: 'mm', sub: (v) => '×' + v.toFixed(2) + ' builder' },
-    { key: 'head', g: 'mallet', label: 'Mallet head', en: 'HEAD', min: 0, max: 3, step: 1, def: 1,
+      fmt: (v, c) => (c.geom ? ((gedackt(c) ? woodWallOf(c.geom.H) : wallOf(c.geom.d)) * v * 1e3).toFixed(2) : '—'), unit: 'mm',
+      sub: (v, c) => '×' + v.toFixed(2) + (gedackt(c) ? ' boards' : ' builder') },
+    { key: 'head', g: 'mallet', label: 'Mallet head', en: 'HEAD', min: 0, max: 4, step: 1, def: 1,
       fmt: (v) => HEAD[Math.round(v)] || '?', unit: '', sub: (v) => headSub(v) },
     { key: 'headD', g: 'mallet', label: 'Head size', en: 'HEAD Ø', min: 10, max: 50, def: 25,
       fmt: (v) => v.toFixed(0), unit: 'mm', sub: (v, c) => headMass(c.G.head, v) },
@@ -202,11 +241,17 @@ window.OKL = window.OKL || {};
   }
   const clampV = (d, v) => Math.min(d.max, Math.max(d.min, v));
 
+  /* v1.1.1: the RESET button at the right of every row (an anticlockwise arrow) */
+  const RESET_ICON = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.4 8.4A4.6 4.6 0 1 0 5 4.6" />' +
+    '<path d="M4.1 1.9 4.7 5.3 8.1 4.7" /></svg>';
+  const atDefault = (d, v) => Math.abs(toNorm(d, v) - toNorm(d, d.def)) < 1e-6;
+
   const UI = {
     defs: DEFS, byKey: BY_KEY, defaults: DEFAULTS, toNorm, fromNorm, rows: {},
     readOnly: false,
     onChange: null,            // (key, value, source)
     onLearn: null,             // plugin: (key) MIDI learn
+    onReset: null,             // (key) a row's RESET button
 
     build(ctx) {
       this.ctx = ctx;
@@ -223,11 +268,13 @@ window.OKL = window.OKL || {};
           `<div class="prm-l"><span class="nm">${d.label}</span><span class="cc">${ctl}${d.en}</span></div>` +
           `<div class="prm-t" title="${d.bandNote ? 'Green band: ' + d.bandNote : ''}"><div class="rail"></div><div class="ticks"></div><div class="band" hidden></div>` +
           `<div class="fill"></div><div class="def"></div><div class="mod"></div><div class="thumb"></div></div>` +
-          `<div class="prm-v"></div>`;
+          `<div class="prm-v"></div>` +
+          `<button type="button" class="prm-r" title="RESET: ${d.label} back to its default" aria-label="Reset ${d.label}">${RESET_ICON}</button>`;
         host.appendChild(row);
         const r = {
           row, d, track: row.querySelector('.prm-t'), fill: row.querySelector('.fill'), thumb: row.querySelector('.thumb'),
           band: row.querySelector('.band'), defm: row.querySelector('.def'), mod: row.querySelector('.mod'), val: row.querySelector('.prm-v'),
+          rst: row.querySelector('.prm-r'),
         };
         r.defm.style.left = (toNorm(d, d.def) * 100) + '%';
         this.rows[d.key] = r;
@@ -257,6 +304,7 @@ window.OKL = window.OKL || {};
       tr.addEventListener('pointerup', end);
       tr.addEventListener('pointercancel', end);
       tr.addEventListener('dblclick', () => { if (!this.readOnly) this.set(d.key, d.def, 'ui'); });
+      r.rst.addEventListener('click', () => { if (!this.readOnly) this.reset(d.key); });
       // plugin: right-click = MIDI learn (the plugin assigns the next controller that moves)
       r.row.addEventListener('contextmenu', (e) => { if (this.onLearn) { e.preventDefault(); this.onLearn(d.key); } });
       r.row.addEventListener('wheel', (e) => {
@@ -278,6 +326,26 @@ window.OKL = window.OKL || {};
     },
 
     setNorm(key, n, source) { const d = BY_KEY[key]; if (d) this.set(key, fromNorm(d, n), source); },
+
+    /* v1.1.1: one parameter back to its default (the row's RESET button) */
+    reset(key) {
+      const d = BY_KEY[key];
+      if (!d) return;
+      if (this.onReset) this.onReset(key);
+      else this.set(key, d.def, 'reset');
+      this.refresh();
+    },
+
+    /* the plugin's own defaults (its 'init' message): the RESET buttons and the default marks use them */
+    setDefaults(map) {
+      for (const key in map) {
+        const d = BY_KEY[key], v = +map[key];
+        if (!d || !isFinite(v)) continue;
+        d.def = v; DEFAULTS[key] = v;
+        const r = this.rows[key];
+        if (r) r.defm.style.left = (toNorm(d, v) * 100) + '%';
+      }
+    },
 
     /* controller tag of a row ('CC74', 'CC93/82', 'PB'; empty = none), from the plugin's learnable map */
     setTag(key, ctl) {
@@ -333,6 +401,8 @@ window.OKL = window.OKL || {};
         const sub = d.sub ? d.sub(v, ctx) : '';
         const html = d.fmt(v, ctx) + (unit ? `<span class="u">${unit}</span>` : '') + (sub ? `<span class="sub">${sub}</span>` : '');
         if (r.html !== html) { r.val.innerHTML = html; r.html = html; }
+        const atDef = atDefault(d, v);                          // the RESET button lights up when the value is off its default
+        if (r.atDef !== atDef) { r.row.classList.toggle('atdef', atDef); r.atDef = atDef; }
       }
     },
 
@@ -341,9 +411,18 @@ window.OKL = window.OKL || {};
       for (const key in this.rows) this.rows[key].row.classList.toggle('off', !fn(key));
     },
 
+    /* V2: rows that belong to one stop only (the Prinzipal's metal, the Gedackt's wood) */
+    setStop(stop) {
+      for (const key in this.rows) {
+        const r = this.rows[key];
+        if (r.d.stop !== undefined) r.row.classList.toggle('stophid', r.d.stop !== stop);
+      }
+    },
+
     setReadOnly(on) {
       this.readOnly = on;
       document.querySelectorAll('.prm-t').forEach((t) => { t.style.cursor = on ? 'default' : ''; });
+      document.querySelectorAll('.prm-r').forEach((b) => { b.disabled = on; });
     },
   };
   OKL.params = UI;

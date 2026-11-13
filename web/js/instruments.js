@@ -432,6 +432,26 @@ OKL.inst = (function () {
     cx.strokeStyle = 'rgba(70,227,255,0.05)'; cx.lineWidth = 1;
     for (let x = 10; x < w; x += 16) { cx.beginPath(); cx.moveTo(x, 0); cx.lineTo(x, secH); cx.stroke(); }
     text(cx, 'CROSS-SECTION AT THE STRIKE', 10, 16, '500 10px ' + SANS, C.dim);
+    const box = g && g.stop === 1;        // v2.0: a wooden box: its front board bends across its width (orders n = 1, 3, 5 ...)
+    let sc0 = R / ((g ? g.d : 0.05) / 2);
+    if (box) {
+      const Wo = g.H + 2 * (g.wall || 0), Do = g.depth + 2 * (g.wall || 0), s0 = 2 * R / Math.max(Wo, Do);
+      sc0 = s0;
+      const bx0 = cxp - Do * s0 / 2, by0 = cyp - Wo * s0 / 2, bw = Do * s0, bh = Wo * s0, t = (g.wall || 0) * s0;
+      cx.strokeStyle = 'rgba(147,184,199,0.25)'; cx.setLineDash([3, 3]); cx.strokeRect(bx0, by0, bw, bh); cx.setLineDash([]);
+      cx.fillStyle = 'rgba(169,130,79,0.16)'; cx.fillRect(bx0, by0, bw, bh);
+      cx.fillStyle = '#05101a'; cx.fillRect(bx0 + t, by0 + t, bw - 2 * t, bh - 2 * t);
+      // the struck front board (left) between the side boards: inward positive
+      cx.beginPath();
+      for (let k = 0; k <= 60; k++) {
+        const yy = k / 60;                  // across the inside width
+        let dr = 0;
+        for (let n = 1; n < 9; n += 2) if (wallState.amp[n] > 0) dr += wallState.amp[n] * Math.sin(n * Math.PI * yy) * Math.sin(2 * Math.PI * (0.35 + 0.22 * n) * now + n);
+        const x = bx0 + t / 2 + dr * ex, y = by0 + t + yy * (bh - 2 * t);
+        if (k === 0) cx.moveTo(x, y); else cx.lineTo(x, y);
+      }
+      cx.strokeStyle = '#e3c28d'; cx.lineWidth = Math.max(2, t); cx.stroke(); cx.lineWidth = 1;
+    } else {
     // rest circle and the deformed wall (slow motion: each order at its own visible rate)
     cx.strokeStyle = 'rgba(147,184,199,0.25)'; cx.setLineDash([3, 3]);
     cx.beginPath(); cx.arc(cxp, cyp, R, 0, Math.PI * 2); cx.stroke(); cx.setLineDash([]);
@@ -447,13 +467,15 @@ OKL.inst = (function () {
     cx.closePath();
     cx.fillStyle = 'rgba(217,213,204,0.06)'; cx.fill();
     cx.strokeStyle = '#d9d5cc'; cx.lineWidth = 2; cx.stroke(); cx.lineWidth = 1;
+    }
     // the mallet head, true scale to the pipe: comes in, touches, flies off
     if (g && ml && s.headD) {
-      const sc = R / (g.d / 2);
+      const sc = sc0;
+      const face = box ? cxp - (g.depth + 2 * (g.wall || 0)) * sc0 / 2 : cxp - R;
       const rh = Math.min(34, s.headD / 2 * sc);
       const tH = now - wallState.hitAt;
       const gap = tH < 0 ? 40 : (tH < 0.06 ? 0 : Math.min(60, (tH - 0.06) * 220));
-      const hx = cxp - R - rh - gap;
+      const hx = face - rh - gap;
       if (hx + rh > -10) {
         cx.fillStyle = s.headColor || '#b07a3a';
         cx.beginPath(); cx.arc(hx, cyp, rh, 0, Math.PI * 2); cx.fill();
@@ -463,7 +485,7 @@ OKL.inst = (function () {
       }
       if (tH >= 0 && tH < 0.25) {
         cx.strokeStyle = 'rgba(255,181,71,' + (1 - tH / 0.25) + ')';
-        cx.beginPath(); cx.arc(cxp - R, cyp, 6 + tH * 120, -1.2, 1.2); cx.stroke();
+        cx.beginPath(); cx.arc(face, cyp, 6 + tH * 120, -1.2, 1.2); cx.stroke();
       }
     }
     // amplitudes per order (right side), 60 dB scale
@@ -477,8 +499,8 @@ OKL.inst = (function () {
       text(cx, String(n), bx - 12, y, '500 9px ' + MONO, MODE_COL(n, 0.95));
       text(cx, a > 0 ? fmtUm(a) : '', bx + 60, y, '400 8.5px ' + MONO, C.fg2);
     }
-    text(cx, '0 breathing · 1 bending · 2+ ovalling', 10, 164, '400 9px ' + SANS, C.dim);
-    text(cx, '×' + fmtEx(ex / (R / (g ? g.d / 2 : 0.025))) + ' motion', w - 10, 164, '400 9px ' + MONO, C.dim, 'right');
+    text(cx, box ? 'front board: n half-waves across, 1 3 5 7' : '0 breathing · 1 bending · 2+ ovalling', 10, 164, '400 9px ' + SANS, C.dim);
+    text(cx, '×' + fmtEx(ex / sc0) + ' motion', w - 10, 164, '400 9px ' + MONO, C.dim, 'right');
     text(cx, '← MALLET', 10, 32, '500 9.5px ' + SANS, C.amber);
     // the stroke: contact force against time
     const y0 = secH + 6, y1 = h - 10, x0 = 40, x1 = w - 10;

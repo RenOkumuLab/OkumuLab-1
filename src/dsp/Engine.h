@@ -15,6 +15,7 @@
 #include "LabiumCore.h"
 #include "Params.h"
 #include "Reverb.h"
+#include "Tuning.h"
 
 #include <array>
 #include <atomic>
@@ -75,6 +76,9 @@ struct Telemetry
     int focusId = -1;
     float pg = 0, vm = 0, M = 0, dline = 0, kappa = 0, y0 = 0, ampcap = 0;
     float bJet = 0;     // V11: the jet's half-width at the labium (y0: its offset there; ampcap: its growth exponent)
+    // V2: the stop drawn (the knobs' stop; the focus pipe's own below), a rectangular body's depth, ears, arched cut-up, wood
+    int stop = 0, focusStop = 0, wood = 0;
+    float depth = 0, ears = 0, arch = 0;
     // MALLET: the struck pipe in focus
     int excite = 0;
     MalletTelemetry mallet;
@@ -87,7 +91,7 @@ class Engine
 {
 public:
     static constexpr int kMaxVoices = 32;
-    static constexpr int kMinNote = 0, kMaxNote = 127;     // P5: the whole MIDI range (pipes beyond the 8' compass)
+    static constexpr int kMinNote = 24, kMaxNote = 96;     // V2: the compass of both stops (other notes sound nothing)
     static constexpr double kGain = 0.9;            // full scale per Pa at 1 m (labium.py)
     static constexpr double kJetJitter = 0.35;      // P5: turbulent spread of the jet's convection time (std / delay)
     double jetJitter = kJetJitter;                  // (set before prepare; the checks set 0 for the sharp jet of Phase 1)
@@ -98,6 +102,9 @@ public:
 
     void setGlobals (const Globals& g);
     const Globals& globals() const { return G; }
+    /* v2.0: a scale loaded from Scala files (used when the Temperament knob is on Custom); a copy, no allocation */
+    void setCustomTuning (const CustomTuning& c) { custom = c; }
+    const CustomTuning& customTuning() const { return custom; }
 
     /* id: any int identifying the note (keyboard: MIDI note, pad pipes: 1000 + pad) */
     void noteOn (int id, int midi, int velocity, const VoiceOverride& vo = {});
@@ -145,11 +152,14 @@ private:
     void modulated (const Voice& v, Globals& g) const;
     void strikeOrQueue (Voice& v, double v0);
     void runPendingStrikes();
+    static int stopOf (const Globals& g);
+    void changeStop (const Globals& g);
 
     std::array<Voice, kMaxVoices> voices;
-    std::array<PipeDesign, 128> designs;
-    std::array<double, 128> learned {};             // P3: servo correction per key, carried to the next note
+    std::array<std::array<PipeDesign, 128>, 2> designs;      // V2: per stop
+    std::array<std::array<double, 128>, 2> learned {};      // P3: servo correction per key (V2: and stop), carried to the next note
     Globals G;
+    CustomTuning custom;             // v2.0
     bool gDirty = false;
     double fsOut = 48000, fs = 96000;
     int os = 2;

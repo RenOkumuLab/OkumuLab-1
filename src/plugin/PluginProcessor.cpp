@@ -151,6 +151,7 @@ OkumuLabProcessor::OkumuLabProcessor()
         raw[(size_t) i] = apvts.getRawParameterValue (kParamDefs[i].id);
         params[(size_t) i] = apvts.getParameter (kParamDefs[i].id);
     }
+    stopIndex = paramIndex ("stop");
     for (auto& m : midiPending) m.store (-1.0f);
     outBuf.assign ((size_t) kStream, 0.0f);
     sigBuf.assign ((size_t) kStream, 0.0f);
@@ -300,6 +301,15 @@ void OkumuLabProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         engine.allOff (true);
         router.resetPads();
     }
+    // v2.0: a scale loaded on the message thread (never waited for: if it is being written, the next block takes it)
+    {
+        const juce::SpinLock::ScopedTryLockType tl (tuneLock);
+        if (tl.isLocked() && tuneDirty)
+        {
+            engine.setCustomTuning (tuneShared);
+            tuneDirty = false;
+        }
+    }
 
     float* L = buffer.getWritePointer (0);
     float* R = buffer.getNumChannels() > 1 ? buffer.getWritePointer (1) : nullptr;
@@ -413,19 +423,149 @@ void OkumuLabProcessor::timerCallback()
     }
 }
 
+int OkumuLabProcessor::currentStop() const
+{
+    if (stopIndex < 0) return 0;
+    return juce::jlimit (0, kNumStops - 1, (int) std::lround (raw[(size_t) stopIndex]->load()));
+}
+
+double OkumuLabProcessor::paramDefault (int index) const
+{
+    return stopDefault (currentStop(), index);
+}
+
+/* every parameter back to the default of the stop in use (the stop stays: its own default is itself) */
 void OkumuLabProcessor::resetAllParameters()
 {
+    double v[kMaxParams];
+    stopValues (currentStop(), v);
     for (int i = 0; i < kNumParams; ++i)
     {
         midiPending[(size_t) i].store (-1.0f);
         auto* p = params[(size_t) i];
         p->beginChangeGesture();
-        p->setValueNotifyingHost (p->getDefaultValue());
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) v[i]));
         p->endChangeGesture();
     }
 }
 
-// ---------------------------------------------------------------- P5: presets
+void OkumuLabProcessor::resetParameter (int index)
+{
+    if (index < 0 || index >= kNumParams) return;
+    midiPending[(size_t) index].store (-1.0f);
+    auto* p = params[(size_t) index];
+    p->beginChangeGesture();
+    p->setValueNotifyingHost (p->convertTo0to1 ((float) paramDefault (index)));
+    p->endChangeGesture();
+}
+
+// ---------------------------------------------------------------- v2.0: tuning from Scala files
+namespace
+{
+/* a Scala file's bytes as text: UTF-8 as it is, anything else read as Latin-1 (descriptions of older .scl files) */
+juce::String scalaText (const juce::MemoryBlock& mb)
+{
+    const auto* p = static_cast<const char*> (mb.getData());
+    const int n = (int) mb.getSize();
+    if (juce::CharPointer_UTF8::isValidString (p, n)) return juce::String::fromUTF8 (p, n);
+    juce::String s;
+    s.preallocateBytes ((size_t) n * 2);
+    for (int i = 0; i < n; ++i) s += juce::String::charToString ((juce::juce_wchar) (uint8_t) p[i]);
+    return s;
+}
+} // namespace
+
+void OkumuLabProcessor::pushTuning()
+{
+    const juce::SpinLock::ScopedLockType l (tuneLock);
+    tuneShared = tuneMsg;
+    tuneDirty = true;
+}
+
+bool OkumuLabProcessor::applyTuning (const juce::String& scl, const juce::String& kbm, bool report)
+{
+    if (scl.isEmpty() && kbm.isEmpty())
+    {
+        tuneMsg = okl::CustomTuning();
+        tuneFiles.description.clear();
+        tuneFiles.notes = 0;
+        pushTuning();
+        return true;
+    }
+    okl::CustomTuning c;
+    okl::TuningInfo info;
+    if (! okl::buildCustomTuning (scl.toStdString(), kbm.toStdString(), c, info))
+    {
+        if (report) tuneFiles.error = juce::String::fromUTF8 (info.error.c_str());
+        return false;
+    }
+    tuneMsg = c;
+    tuneFiles.description = juce::String::fromUTF8 (info.description.c_str()).trim();
+    tuneFiles.notes = info.notes;
+    tuneFiles.error.clear();
+    pushTuning();
+    return true;
+}
+
+bool OkumuLabProcessor::loadTuningText (bool kbm, const juce::String& text, const juce::String& name)
+{
+    const bool ok = applyTuning (kbm ? tuneFiles.scl : text, kbm ? text : tuneFiles.kbm, true);
+    if (ok)
+    {
+        if (kbm) { tuneFiles.kbm = text; tuneFiles.kbmName = name; }
+        else { tuneFiles.scl = text; tuneFiles.sclName = name; }
+        // what was loaded is what sounds: the Temperament knob to Custom
+        const int ti = paramIndex ("temperament");
+        if (ti >= 0)
+        {
+            auto* p = params[(size_t) ti];
+            midiPending[(size_t) ti].store (-1.0f);
+            p->beginChangeGesture();
+            p->setValueNotifyingHost (p->convertTo0to1 ((float) okl::TEMP_CUSTOM));
+            p->endChangeGesture();
+        }
+    }
+    ++tuneSerial;
+    return ok;
+}
+
+bool OkumuLabProcessor::loadTuningFile (bool kbm, const juce::File& f)
+{
+    if (! f.existsAsFile() || f.getSize() > (1 << 20))
+    {
+        tuneFiles.error = f.getFileName() + ": not a readable file of at most 1 MB";
+        ++tuneSerial;
+        return false;
+    }
+    juce::MemoryBlock mb;
+    if (! f.loadFileAsData (mb))
+    {
+        tuneFiles.error = f.getFileName() + ": could not be read";
+        ++tuneSerial;
+        return false;
+    }
+    return loadTuningText (kbm, scalaText (mb), f.getFileName());
+}
+
+void OkumuLabProcessor::clearTuning (bool kbmOnly)
+{
+    tuneFiles.kbm.clear(); tuneFiles.kbmName.clear();
+    if (! kbmOnly) { tuneFiles.scl.clear(); tuneFiles.sclName.clear(); }
+    tuneFiles.error.clear();
+    if (! applyTuning (tuneFiles.scl, {}, true)) applyTuning ({}, {}, false);
+    // nothing loaded: the Temperament knob leaves Custom for equal temperament
+    const int ti = paramIndex ("temperament");
+    if (! kbmOnly && ti >= 0 && (int) std::lround (raw[(size_t) ti]->load()) == okl::TEMP_CUSTOM)
+    {
+        auto* p = params[(size_t) ti];
+        p->beginChangeGesture();
+        p->setValueNotifyingHost (p->convertTo0to1 ((float) okl::TEMP_EQUAL));
+        p->endChangeGesture();
+    }
+    ++tuneSerial;
+}
+
+// ---------------------------------------------------------------- V2: the programs are the stops
 int OkumuLabProcessor::getNumPrograms() { return (int) factoryPresets().size(); }
 
 const juce::String OkumuLabProcessor::getProgramName (int index)
@@ -434,15 +574,15 @@ const juce::String OkumuLabProcessor::getProgramName (int index)
     return index >= 0 && index < (int) ps.size() ? juce::String::fromUTF8 (ps[(size_t) index].name) : juce::String();
 }
 
-/* every parameter to the recipe's value (the rest to its default), told to the host like a knob move */
+/* the stop, and every parameter to that stop as built, told to the host like a knob move */
 void OkumuLabProcessor::setCurrentProgram (int index)
 {
     if (index < 0 || index >= getNumPrograms()) return;
-    currentProgram.store (index);
     double v[kMaxParams];
     presetValues (index, v);
     for (int i = 0; i < kNumParams; ++i)
     {
+        if (keptAcrossStops (i)) continue;         // v2.0: the organ stays in its tuning
         midiPending[(size_t) i].store (-1.0f);
         auto* p = params[(size_t) i];
         p->beginChangeGesture();
@@ -491,7 +631,12 @@ void OkumuLabProcessor::getStateInformation (juce::MemoryBlock& destData)
     state.setProperty ("ccMap", map.joinIntoString (","), nullptr);
     state.setProperty ("padChannel", router.padChannel.load() + 1, nullptr);
     state.setProperty ("version", JucePlugin_VersionString, nullptr);
-    state.setProperty ("program", currentProgram.load(), nullptr);
+    state.setProperty ("program", currentStop(), nullptr);       // (V2: the stop; the parameter itself is in the tree)
+    // v2.0: the loaded Scala files themselves (the project plays without them)
+    state.setProperty ("tuningScl", tuneFiles.scl, nullptr);
+    state.setProperty ("tuningSclName", tuneFiles.sclName, nullptr);
+    state.setProperty ("tuningKbm", tuneFiles.kbm, nullptr);
+    state.setProperty ("tuningKbmName", tuneFiles.kbmName, nullptr);
     if (auto xml = state.createXml()) copyXmlToBinary (*xml, destData);
 }
 
@@ -511,9 +656,17 @@ void OkumuLabProcessor::setStateInformation (const void* data, int sizeInBytes)
             if (c >= 0 && c < 128 && idx >= 0) router.ccMap[(size_t) c].store (idx);
         }
     }
-    if (state.hasProperty ("program")) currentProgram.store (juce::jlimit (0, getNumPrograms() - 1, (int) state["program"]));
+    // ("program": the stop since V2, its parameter is restored with the tree; a 1.x project's recipe number means nothing now)
     if (state.hasProperty ("padChannel"))
         router.padChannel.store (juce::jlimit (0, 16, (int) state["padChannel"]) - 1);
+    // v2.0: the project's Scala files (none in older projects)
+    tuneFiles = TuningFiles();
+    tuneFiles.scl = state["tuningScl"].toString();
+    tuneFiles.sclName = state["tuningSclName"].toString();
+    tuneFiles.kbm = state["tuningKbm"].toString();
+    tuneFiles.kbmName = state["tuningKbmName"].toString();
+    if (! applyTuning (tuneFiles.scl, tuneFiles.kbm, true)) applyTuning ({}, {}, false);    // (the texts stay, the error says why)
+    ++tuneSerial;
     for (auto& m : midiPending) m.store (-1.0f);
 }
 

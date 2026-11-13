@@ -10,7 +10,7 @@
 namespace okl
 {
 
-enum class Group { Midi, Wind, Voice, Shape, Atmos, Lab, Output, Mallet, Mod };
+enum class Group { Midi, Wind, Voice, Shape, Atmos, Lab, Output, Mallet, Mod, Stop };
 
 enum class Fmt { Num, Pct, Mult, Signed, Gas, Morph, Lock, Db, Inv, Choice, Wind };
 
@@ -61,5 +61,17 @@ int modDstParam (int dst);
 
 /* default controller map (the MiniLab 3 user program): CC -> parameter index, -1 none */
 void defaultCcMap (int (&map)[128]);
+
+/* v2.0: the stops (the "stop" parameter, also the host's programs). The host's own default of a parameter is the
+   Prinzipal's; a stop has its own for the knobs that describe how it is built (scale, mouth, top, wall loss, ears;
+   the arched cut-up starts at 0 on both), and RESET returns to those of the stop in use */
+constexpr int kNumStops = 2;
+enum Stop { STOP_PRINZIPAL = 0, STOP_GEDACKT = 1 };
+extern const char* const kStopNames[kNumStops];
+double stopDefault (int stop, int paramIdx);
+/* every parameter of a stop as built (what selecting it sets) */
+void stopValues (int stop, double* out);
+/* v2.0: the organ's tuning (Temperament, Pitch a1) is not the stop's: selecting a stop keeps it (RESET does not) */
+bool keptAcrossStops (int paramIdx);
 
 } // namespace okl

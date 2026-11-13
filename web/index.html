@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OkumuLab 1</title>
-<meta name="description" content="OkumuLab 1 — physical model of a Prinzipal 8' flue pipe. Phase 2 screen prototype.">
+<meta name="description" content="OkumuLab 1 — physical model of organ flue pipes: Prinzipal 8' and Gedackt 8'.">
 <!-- Phase 4: everything is bundled (Three.js r160 and the fonts in vendor/): the plugin's screen works offline -->
 <link rel="stylesheet" href="vendor/fonts/fonts.css">
 <link rel="stylesheet" href="css/okumulab.css">
@@ -51,8 +51,16 @@
       <button type="button" data-ex="0" class="on">WIND</button>
       <button type="button" data-ex="1">MALLET</button>
     </div>
-    <!-- plugin: the experiment recipes (the host's programs) -->
-    <select id="presetSel" aria-label="Experiment recipe" title="Experiment recipes: the canonical pipe with a few knobs moved (host programs)"></select>
+    <!-- plugin: the stop (the host's programs; v2.0: where the experiment recipes were) -->
+    <select id="presetSel" aria-label="Stop" title="Stop: the Prinzipal 8' (round metal, open) or the Gedackt 8' (wood, stopped); every knob goes to the stop as built (host programs)"></select>
+    <!-- plugin (v2.0): the tuning, always in sight: what the organ is tuned to, and the way into the TUNING panel -->
+    <button type="button" id="tuneChip" class="tune-chip" title="Tuning: the temperament, Pitch a¹ and Scala files (.scl / .kbm). Click to open; drop a .scl or .kbm file anywhere to load it">
+      <svg class="tc-ico" viewBox="0 0 20 20" aria-hidden="true">
+        <path d="M6.5 1.5 v7.5 a3.5 3.5 0 0 0 7 0 v-7.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        <path d="M10 12.5 v6" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"/>
+      </svg>
+      <span class="tc-t"><span class="tc-r"><span class="tc-k">TUNING</span><span class="tc-a" id="tuneChipA">a¹ 440.0 Hz</span></span><span class="tc-v" id="tuneChipVal">Equal</span></span>
+    </button>
     <div class="tb-msg" id="tbMsg">Play with the computer keys (A–K) or a MIDI keyboard</div>
     <div class="tb-right">
       <div class="tb-stat" title="MIDI input"><span class="k">MIDI</span><span class="led" id="midiLed"></span><span class="v" id="midiName">—</span></div>
@@ -141,6 +149,41 @@
     </div>
   </section>
 
+  <!-- ===================== plugin (v2.0): a tuning file dragged over the screen ===================== -->
+  <div id="dropHint" hidden>
+    <div class="dh-box">
+      <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M6.5 1.5 v7.5 a3.5 3.5 0 0 0 7 0 v-7.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M10 12.5 v6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+      <b>DROP TO TUNE</b>
+      <span>.scl scale · .kbm keyboard mapping</span>
+    </div>
+  </div>
+
+  <!-- ===================== plugin (v2.0): the tuning (over the pipe view) ===================== -->
+  <section class="mfd" id="tuning" hidden>
+    <div class="mfd-h"><span class="tag">TU</span>TUNING<em>EVERY PIPE CUT TO ITS PITCH</em><button type="button" class="mx-close" id="tuningClose" title="Close">×</button></div>
+    <div class="tu-body">
+      <div class="tu-now" id="tuSummary"></div>
+      <div id="grp-tune"><div class="prms"></div></div>
+      <div class="tu-file"><span class="tu-k">SCALE .scl</span><span class="tu-v" id="tuScl"></span>
+        <button type="button" class="tu-btn" id="tuLoadScl">LOAD</button><button type="button" class="tu-btn" id="tuClearScl" title="Unload the scale and the mapping">CLEAR</button></div>
+      <div class="tu-file"><span class="tu-k">MAPPING .kbm</span><span class="tu-v" id="tuKbm"></span>
+        <button type="button" class="tu-btn" id="tuLoadKbm">LOAD</button><button type="button" class="tu-btn" id="tuClearKbm" title="Unload the mapping only">CLEAR</button></div>
+      <div class="tu-err" id="tuErr" hidden></div>
+      <div class="tu-cols">
+        <div>
+          <h5>ONE OCTAVE<em>FROM c¹</em></h5>
+          <table class="tu-tab"><thead><tr><th>KEY</th><th>Hz</th><th>CENTS</th><th>vs EQUAL AT THIS a¹</th></tr></thead><tbody id="tuTable"></tbody></table>
+          <p class="tu-note" id="tuSilent"></p>
+        </div>
+        <div>
+          <p class="tu-note">The <b>Temperament</b> knob (above) tunes the organ: equal temperament, a historical temperament built from its circle of fifths, or <b>Custom</b>, the scale loaded here. <b>Pitch a¹</b> is the frequency a¹ is tuned to.</p>
+          <p class="tu-note">A tuned key sounds the pipe of the nearest equal-tempered key, its body cut to the tuned length, as an organ builder tunes it: the mouth follows the pitch (Cut-up follow), and Pitch lock holds the pipe on its tuned pitch.</p>
+          <p class="tu-note">Without a .kbm the scale starts on c¹ and a¹ is tuned to the Pitch knob; a .kbm brings its own reference and may leave keys out (they sound nothing). A .scl or .kbm dropped anywhere on the screen is loaded too. The files are kept in the project.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- ===================== bottom ===================== -->
   <section id="bottom">
     <div class="mfd" id="specPanel">
@@ -166,7 +209,6 @@
 <div id="boot">
   <div class="boot-box">
     <div class="boot-logo">OkumuLab<span>1</span></div>
-    <div class="boot-sub">PRINZIPAL 8' FLUE PIPE · PHYSICAL MODEL · SCREEN PROTOTYPE</div>
     <ul class="boot-list" id="bootList"></ul>
     <button type="button" id="btnEngage" disabled>ENGAGE</button>
     <p class="boot-note">The browser needs a click before it can play sound. ENGAGE starts the audio engine and MIDI.</p>
@@ -199,9 +241,11 @@
           <tr><td>Mouse wheel</td><td>Zoom (double-click to reset)</td></tr>
           <tr><td>Sliders</td><td>Drag or scroll. Shift-drag for fine steps, double-click for the default</td></tr>
           <tr><td>RESET</td><td>Every parameter back to its default (OUT level and view settings stay)</td></tr>
+          <tr><td>↺ right of a slider</td><td>RESET for that parameter alone: back to its default (lit while the value is off it)</td></tr>
           <tr class="plugin-only"><td>Right-click a slider</td><td>MIDI learn: move a controller to assign it (right-click again to cancel)</td></tr>
-          <tr class="plugin-only"><td>Recipe menu</td><td>Experiment recipes (the host's programs): the canonical pipe with a few knobs moved; the top bar says what to listen for</td></tr>
+          <tr class="plugin-only"><td>Stop menu</td><td>Prinzipal 8' (round metal, open) or Gedackt 8' (wood, stopped: Open/Stopped draws its stopper out). Every knob goes to the stop as built; RESET returns to that stop's own defaults</td></tr>
           <tr class="plugin-only"><td>MATRIX</td><td>Modulation matrix (LAB panel): four slots, source → target × amount, per pipe. Amber markers show where it holds each knob</td></tr>
+          <tr class="plugin-only"><td>TUNING</td><td>The tuning (the TUNING button in the top bar, beside the stop, shows what the organ is tuned to and opens the panel): the Temperament and Pitch a¹ knobs, a .scl scale and a .kbm mapping to load (or drop them anywhere on the screen). Temperament on Custom plays them; the button is lit amber while the organ is not in equal temperament at 440 Hz</td></tr>
           <tr class="plugin-only"><td>WIND / MALLET</td><td>Blow the pipe, or strike its body with a hard mallet. Struck: velocity is the mallet speed, key up brings the felt damper (pedal holds it off); dimmed sliders do nothing to a struck pipe</td></tr>
         </table>
       </div>
@@ -224,7 +268,9 @@
           <tr><td>Side hole</td><td>An open hole in the wall, its place along the body. It is a tone hole: it raises the pitch by its acoustic interval (most near the middle of the bore); pitch lock removes only the jet's pull</td></tr>
           <tr><td>FM target</td><td>Physical FM at audio rate of the wind, the pipe length (bore delay) or the upper lip (labium offset)</td></tr>
           <tr><td>Cross drive</td><td>Each jet is also shaken by the other sounding pipes' mouth flow</td></tr>
-          <tr><td>Notes 0–127</td><td>Pipes beyond the compass: the scale is extrapolated (20 m pipes at the bottom, a few mm at the top)</td></tr>
+          <tr><td>Notes 24–96</td><td>The compass of both stops, C, (32.7 Hz) to c⁴ (2093 Hz); other notes sound nothing</td></tr>
+          <tr><td>Temperament · Pitch a¹</td><td>The organ's tuning: equal, Pythagorean, 1/4-comma meantone, Werckmeister III, Kirnberger III, Vallotti, Young, or a loaded Scala scale; a¹ 380–480 Hz. Every pipe is cut to its tuned pitch. Choosing another stop keeps the tuning</td></tr>
+          <tr><td>Ears · Arched cut-up</td><td>The Gedackt's mouth: side ears (their air plug lengthens the mouth's end correction: a little flatter, a clearer speech) and a semicircular upper lip (the jet crosses the mouth in strips of different lengths: a rounder tone)</td></tr>
         </table>
         <p class="help-note">The defaults follow the MiniLab 3 user program, but any controller that sends these messages works. Use the MIDI monitor (MON) to see what a controller sends.</p>
       </div>
@@ -242,6 +288,7 @@
 <script src="js/instruments.js"></script>
 <script src="js/mallet.js"></script>
 <script src="js/matrix.js"></script>
+<script src="js/tuning.js"></script>
 <script src="js/midi.js"></script>
 <script src="js/replay.js"></script>
 <script src="js/app.js"></script>

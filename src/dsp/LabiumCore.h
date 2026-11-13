@@ -20,6 +20,10 @@
  * the two open ends radiate in their own filter stage (Norris & Sheng 1989), so the bore's
  * upper resonances lose what a wide pipe loses.
  *
+ * v2.0 ("V2:"): a second stop, the wooden Gedackt 8' (a stopped pipe of rectangular section, designGedackt), and two
+ * parts of its mouth the Prinzipal did not have: side ears (their air plug adds to the mouth's end correction) and
+ * an arched cut-up (the jet crosses the mouth in strips of different lengths). The compass is MIDI 24-96.
+ *
  * No JUCE in here: the same code is linked into the plugin and into the
  * offline checks (tests/labium_check.cpp).
  */
@@ -51,6 +55,9 @@ enum Par
     P_EXCITE, P_METAL, P_WALL, P_HEAD, P_HEADD, P_STRIKE, P_DAMPER, P_TEMPK,
     // P5: nicking 0..1, FM target (0 wind, 1 length, 2 upper lip), cross drive (other voices shake the jet), side hole (0 off, else position)
     P_NICK, P_FMTGT, P_CROSS, P_HOLE,
+    // V2: the stop (0 Prinzipal: round metal, 1 Gedackt: rectangular wood, designed stopped), the inside depth of a
+    // rectangular body [m] (its width is the mouth width P_MOUTHW), side ears 0..1, arched cut-up 0..1, the wood (index)
+    P_STOP, P_DEPTH, P_EARS, P_ARCH, P_WOOD,
     NPAR
 };
 
@@ -70,16 +77,63 @@ void organName (int midi, char* buf);
 struct PipeDesign
 {
     int midi = 60;
+    int stop = 0;              // V2: 0 Prinzipal 8', 1 Gedackt 8'
     double f0 = 0, d = 0, mouthW = 0, cutup = 0, flue = 0, toe = 0, toeConst = 0, footVol = 0, footLen = 0;
     double lPhys = 0, Leff = 0, M = 0, pChest = 0, pFoot = 0, Uj = 0, ising = 0;
+    double depth = 0;          // V2: inside depth of a rectangular body (its width is mouthW; d is the equal-area diameter)
     double c = 0, rho = 0, gamma = 0, mu = 0;
 };
 
 /* the canonical pipe of a key: Normalmensur -2 HT, mouth 1/4, 75 mmWS, air 20 °C (labium.py) */
 PipeDesign designPrinzipal (int midi);
 
+/* ---------------------------------------------------------- V2: Gedackt 8' */
+/* the wooden stopped pipe of a key. Scale (v2.0, the user's choice after the narrow scale proved string-like: its
+   mouth's end correction too small against the body, the upper resonances on the odd partials): Dickson 1882, Practical
+   Organ Building ch. 2, the English Stopped Diapason: CC 3 1/4 x 4 in (82.5 x 101.6 mm) inside (width = mouth x depth),
+   tenor C 2 1/8 x 2 5/8 in (54.0 x 66.7 mm): the equal-area diameter halving every 19.7 half-tones (12 / log2 of their
+   ratio); mouth = the inside width; cut-up 5 half-tones above Toepfer's norm cut-up of the sounding pitch (Janke 2015:
+   Gedackte +6..+9, 2-3 lower at a house organ's low wind, as the reference 500 Pa is); stopper set to tune the pipe at
+   the reference wind; the flue of real wooden pipes (kGedacktFlue*), toe and foot by the Prinzipal's rules (the foot
+   pressure 0.7 of the chest's); 75 mmWS, air 20 °C; body
+   length a quarter wave less the mouth's end correction (Fletcher & Rossing eq. 17.5, with its ears and the neck through
+   the front board). (v2.0 until then: Janke's house-organ Gedeckt, C 60 x 75 mm, halving every 20 half-tones) */
+PipeDesign designGedackt (int midi);
+/* v2.0: the user's voicing of the Gedackt (their explicit choice, by ear towards real Gedackts; not from the literature):
+   the cut-up of Janke's rule times 1.00 up to f# (MIDI 54, and the 16' octave below C), and from g a factor per key
+   (1.468 at g .. 1.457 at f#1, 1.607 at g1 .. 1.580 at f#2, 1.605 at g2 .. 1.532 at g3, 1.456 at g#3 .. 1.410 at c4). The
+   user chose 1.50 g..f#1, 1.67 g1..f#2, 1.71 g2..g3, 1.58 g#3..c4 with the Cut-up knob on the pipe as built before (its
+   stopper left as it was, ears on); each key's factor gives, with its stopper set to the key and no ears, the level the
+   user heard then within 0.1 dB (labium_check gfitkey). The Cut-up knob's x1.00 is this voiced cut-up */
+double gedacktCutVoicing (int midi);
+PipeDesign designStop (int stop, int midi);
+constexpr double kGedacktWidthC = 0.0825, kGedacktDepthC = 0.1016, kGedacktHalving = 19.7;
+/* v2.0: the block and the foot of a wooden pipe, toe to mouth, per inside width: the Bund Deutscher Orgelbaumeister's
+   stopped wooden pipe (Bauanleitung Holzpfeife, J. Hess 2018: inside 47 x 60 mm, a block 50 mm high, a turned foot
+   40 mm long set 10 mm into it): (50 + 30) / 47, the pipe drawn geometrically like it at every key */
+constexpr double kGedacktFootPerWidth = 80.0 / 47.0;
+/* v2.0: the flue (Kernspalte) of real wooden pipes, h = 1 mm (W / 47 mm)^e, through two measured pipes: the BDO's (inside
+   47 x 60 mm, "Kernspalte ... feilen (ca. 1 mm)") and Fischer, Bader & Abel's Schuke stopped pipe (Acoustics 2019: 9 x
+   9 mm, windway 0.6 mm): e = ln (1 / 0.6) / ln (47 / 9) = 0.309. Within Dickson's bounds (tenor C 1/16 in or less, CC under
+   1/8 in): C 1.19, c 1.04, c1 0.92, c3 0.71 mm. (v2.0 until then: the Prinzipal's rule on the equal-area diameter, 1.25
+   to 1.8 times narrower: C 0.90, c1 0.61, c3 0.42 mm) */
+constexpr double kGedacktFlue47 = 1.0e-3, kGedacktFlueExp = 0.309;
+/* the Gedackt's C as the Scale and Mouth width knobs read it: half-tones of the Normalmensur for its equal-area
+   diameter, and its mouth (the inside width) over that circumference */
+double gedacktScaleHT();
+double gedacktMouthFrac();
+
+/* V2: the mouth's end correction [m]. Fletcher & Rossing (eq. 17.5) for the Gedackt (fr), the Phase 1 rule 0.3 d^2 / W
+   for the Prinzipal; the Gedackt's mouth, cut through its front board, adds the neck's air t S / S_m (v2.0, t the board);
+   ears (0..1) add their air plug: the outer side of the mouth flanked on its two vertical sides
+   (their share of the mouth's perimeter) moves from an unflanged end correction (0.6133 a_m, Levine & Schwinger 1948)
+   towards a flanged one (0.8216 a_m, Rayleigh) */
+double mouthCorrection (bool fr, double d, double mouthW, double cutup, double ears);
+
 /* pitch-lock calibration factor of a key (Phase 1 calibrate.py), interpolated / clamped */
 double kcalFor (double midi);
+/* V2: per stop (the Gedackt's from its own run of the same calibration) */
+double kcalForStop (int stop, double midi);
 
 /* ------------------------------------------------- performance parameters */
 /* what the knobs move (same names and defaults as DEFAULT_G of the Phase 2 engine) */
@@ -132,6 +186,14 @@ struct Globals
     double modAmt1 = 0, modAmt2 = 0, modAmt3 = 0, modAmt4 = 0;
     double lfo1Rate = 0.5, lfo2Rate = 3.0;    // [Hz]
     double envAttack = 0.05, envDecay = 1.0;  // [s]
+    // V2: the stop, and the parts of a wooden Gedackt's mouth
+    double stop = 0.0;         // 0 Prinzipal 8', 1 Gedackt 8' (Params.h Stop)
+    double ears = 0.0;         // side ears (Seitenbaerte) 0 none .. 1
+    double arch = 0.0;         // arched cut-up: 0 straight .. 1 semicircular
+    double wood = 0.0;         // MALLET: the wood of a wooden pipe (index into the wood table)
+    // v2.0: the tuning (Tuning.h)
+    double temperament = 0.0;  // index: equal, the historical temperaments, a loaded Scala scale
+    double pitchA = 440.0;     // a1 [Hz]
 };
 
 /* per-voice overrides: wind (mmWS, pad pipes; < 0 = none), pallet time constant (0 = default) */
@@ -141,8 +203,9 @@ struct VoiceOverride
     double tau = 0.0;
 };
 
-/* control vector of one voice: the canonical pipe of its key, deformed by the knobs */
-void voiceParams (int midi, const Globals& G, const VoiceOverride& vo, const PipeDesign& pd, ParamVec& v);
+/* control vector of one voice: the canonical pipe of its key, deformed by the knobs (v2.0: tuneSemis, the tuning's
+   rest for that key, cuts the body like the Length glide) */
+void voiceParams (int midi, const Globals& G, const VoiceOverride& vo, const PipeDesign& pd, ParamVec& v, double tuneSemis = 0.0);
 
 /* ------------------------------------------------------------- derived */
 struct Derived
@@ -150,7 +213,7 @@ struct Derived
     double dline = 3, lb0 = 1, lb1 = 0, la1 = 0, lpDelay = 0, taum = 0, aMorph = 0, M = 0, Leff = 0, fres = 0, W = 0;
     double rb0 = 1, rb1 = 0, rb2 = 0, ra1 = 0, ra2 = 0;      // V11: radiation stage of the two open ends (biquad)
     double holeR = 1, holeX = 0;         // P5: first resonance with the open side hole / without; its place on the bore (m)
-    double morphFor = -1, fsFor = 0;     // aMorph cache key
+    double morphFor = -1, fsFor = 0, stopFor = -1;     // aMorph cache key
 };
 /* phase1: the Phase 1 losses (both ends' radiation in the wall's shelf, exp(-0.5 (ka)^2)); the checks compare that
    with the Phase 1 C core */
@@ -285,6 +348,9 @@ public:
     // identity / bookkeeping (engine)
     bool active = false, held = false;
     int id = -1, midi = 60;
+    int pipeKey = 60;           // v2.0 tuning: the key of the equal scale whose canonical pipe sounds it (Tuning.h)
+    int stop = 0;               // V2: the stop this pipe belongs to (set when its note starts)
+    bool frozen = false;        // V2: a pipe of a stop pushed in while it sounded: it dies away as it was, the knobs no longer reach it
     double gate = 0;
     uint64_t age = 0;
     VoiceOverride vo;
@@ -324,6 +390,9 @@ private:
     // state (labium_core.c names)
     double qin_prev = 0, dq_lp = 0, lsh_x1 = 0, lsh_y1 = 0, dc_x1 = 0, dc_y1 = 0;
     double apm_x1 = 0, apm_y1 = 0, mq_prev = 0, mu_prev = 0, vj = 0, vj2 = 0;
+    double apt_x1 = 0, apt_y1 = 0;      // V2: the stopper's reflection without the losses (the flow through the top)
+    double bn_x1 = 0, bn_y1 = 0;        // v2.0: the Gedackt's Bernoulli term of the jet drive, its DC blocker
+    double bnK = 0;                     // its rho / S_p^2 (frame constant; 0 on the Prinzipal)
     double jl1 = 0, jl2 = 0;            // P5: the low-pass ahead of the jitter taps (no grating lobes)
     double rx1 = 0, rx2 = 0, ry1 = 0, ry2 = 0;     // V11: radiation stage state
     double jitA = 1.0, jitGd = 0.0;     // its coefficient and group delay (frame constants: a control frame can span two renders)
@@ -364,6 +433,19 @@ private:
     double sampleClock = 0, zFirst = -1, zLast = -1, zMinI = 1e30, zMaxI = 0;
     int zCount = 0;
     double fPrevMeas = 0;
+
+    // V2: an arched cut-up: the jet in strips across the mouth (mirrored pairs: four distinct lengths), their travel time
+    // (and its step), low-passed delayed mouth velocity, gain, 1 / half-width, flow scale, offset, lip FM swing, drive share
+    // (OKL_STRIPS: another number, for the convergence check, labium_check gtone. 2 -> 4 moves c1's H5 by 6.5 dB,
+    // 4 -> 8 by 1.5 dB and H2-H4 by under 0.5 dB)
+#ifndef OKL_STRIPS
+ #define OKL_STRIPS 4
+#endif
+    static constexpr int kStrips = OKL_STRIPS;
+    bool stripsOn = false;
+    double sTau[kStrips] {}, sTauStep[kStrips] {}, sVj[kStrips] {}, sVj2[kStrips] {}, sHG[kStrips] {}, sInvb[kStrips] {};
+    double sBH[kStrips] {}, sY0[kStrips] {}, sLip[kStrips] {}, sPjK[kStrips] {};
+    double sQwPrev = 0, sDqw = 0;           // the jet drive: sum of the strips' flows weighted by their drive, its derivative (low-passed)
 
     // P5: side hole (junction state: hole volume flow and junction pressure, opening 0..1)
     double holeU = 0, holeP = 0, holeOpen = 0, holeUprev = 0;

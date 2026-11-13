@@ -7,7 +7,10 @@ It is a physical model of organ flue pipes (two stops: Prinzipal 8' and Gedackt 
 
 - Version 2.0.0, vendor name OkumuLab
 - Formats: VST3 and standalone (Windows x64, Linux x86-64); VST3, Audio Unit and standalone (macOS 10.15 or later, Apple silicon and Intel)
-<img width="1266" height="792" alt="スクリーンショット 2026-10-08 154201" src="https://github.com/user-attachments/assets/d39dea1d-3336-4553-88fe-ee4d444414aa" />
+<img width="2560" height="1600" alt="okumulab1_prinzipal_wind" src="https://github.com/user-attachments/assets/d6fc1eea-95d9-4b10-a23c-8abed95e8232" />
+
+<img width="2560" height="1600" alt="okumulab1_gedackt_wind" src="https://github.com/user-attachments/assets/020c1eba-15c6-4e85-bdb6-82def8e53e87" />
+<img width="2560" height="1600" alt="okumulab1_gedackt_tuning" src="https://github.com/user-attachments/assets/385a5d9b-fc4e-4ce5-b4c9-6466f8826e86" />
 
 ## Features
 

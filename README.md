@@ -35,10 +35,6 @@ The details of the physical model, the MIDI mapping and the test results are in 
 - The Gedackt's lowest key, C, (32.7 Hz), is at the edge of speech at the reference wind: it fades slowly. Cut-up ×0.90 (or more wind) makes it steady.
 - With the cut-up arched, a Gedackt pipe takes about twice the CPU of a Prinzipal pipe (the jet in strips). On the laptop it was developed on (Ryzen 5 3500U), 16 such pipes take about 60 % of one core and 32 more than one core. At the default 0 % it is as light as the Prinzipal.
 
-## What's new in 1.1.1
-
-- **A RESET button for every parameter.** Each row with a slider (and each knob of the simple native screen) has a small RESET button (↺) at its right that returns that parameter alone to its default. It lights up while the value is off the default. The RESET button in the top bar still returns every parameter at once. The host sees each press as one parameter change.
-- The sound engine is the same as in 1.1.0.
 
 ## What's new in 1.1.0
 
